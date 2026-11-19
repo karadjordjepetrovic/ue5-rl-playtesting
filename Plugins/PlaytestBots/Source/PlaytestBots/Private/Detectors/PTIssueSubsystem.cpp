@@ -115,6 +115,7 @@ void UPTIssueSubsystem::HandleRunStarted(const FPTRunConfig& Config)
 			{
 				State.SpawnTransform = Bot->GetActorTransform();
 				State.LastKnownLocation = Bot->GetActorLocation();
+				State.LastGroundedLocation = State.LastKnownLocation;
 			}
 		}
 	}
@@ -168,8 +169,8 @@ void UPTIssueSubsystem::SampleBots()
 			if (!State.bLost)
 			{
 				State.bLost = true;
-				ReportIssue(Index, EPTIssueType::OutOfWorld, State.LastKnownLocation,
-					TEXT("Bot was destroyed (most likely fell below KillZ)"));
+				ReportIssue(Index, EPTIssueType::OutOfWorld, State.LastGroundedLocation,
+					TEXT("Bot was destroyed (most likely fell below KillZ); location = last grounded position"));
 			}
 			continue;
 		}
@@ -204,14 +205,17 @@ void UPTIssueSubsystem::SampleBots()
 
 		PushSample(State, Sample);
 		State.LastKnownLocation = Sample.Location;
+		if (!Sample.bFalling)
+		{
+			State.LastGroundedLocation = Sample.Location;
+		}
 
-		if (Now < State.CooldownUntil)
+		// Out of world is always checked (even during cooldown), so falls are caught right away.
+		if (CheckOutOfWorld(Index, Sample))
 		{
 			continue;
 		}
-
-		// Out of world first: a falling bot is not "stuck".
-		if (!CheckOutOfWorld(Index, Sample))
+		if (Now >= State.CooldownUntil)
 		{
 			CheckStuck(Index, Sample);
 		}
@@ -273,15 +277,18 @@ bool UPTIssueSubsystem::CheckOutOfWorld(int32 BotIndex, const FPTActionSample& N
 
 	if (bHasNavFloor && Now.Location.Z < LowestNavZ - FallMarginBelowNav)
 	{
-		ReportIssue(BotIndex, EPTIssueType::OutOfWorld, Now.Location,
-			FString::Printf(TEXT("%.0f cm below the lowest navmesh floor"), LowestNavZ - Now.Location.Z));
+		const FVector FallStart = BotStates[BotIndex].LastGroundedLocation;
+		ReportIssue(BotIndex, EPTIssueType::OutOfWorld, FallStart,
+			FString::Printf(TEXT("Fell %.0f cm below the lowest navmesh floor; location = where the fall started"),
+				LowestNavZ - Now.Location.Z));
 		return true;
 	}
 
 	const AWorldSettings* Settings = GetWorld() ? GetWorld()->GetWorldSettings() : nullptr;
 	if (Settings && Settings->bEnableWorldBoundsChecks && Now.Location.Z < Settings->KillZ + 200.f)
 	{
-		ReportIssue(BotIndex, EPTIssueType::OutOfWorld, Now.Location, TEXT("Near KillZ"));
+		ReportIssue(BotIndex, EPTIssueType::OutOfWorld, BotStates[BotIndex].LastGroundedLocation,
+			TEXT("Near KillZ; location = where the fall started"));
 		return true;
 	}
 
@@ -408,6 +415,7 @@ void UPTIssueSubsystem::RespawnBot(FBotState& State) const
 	// Don't compare positions across the teleport.
 	State.HistoryCount = 0;
 	State.HistoryHead = 0;
+	State.LastGroundedLocation = State.SpawnTransform.GetLocation();
 }
 
 void UPTIssueSubsystem::WriteReport() const

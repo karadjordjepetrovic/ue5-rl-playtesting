@@ -53,6 +53,7 @@ private:
 		TWeakObjectPtr<APawn> Pawn;
 		FTransform SpawnTransform = FTransform::Identity;
 		FVector LastKnownLocation = FVector::ZeroVector;
+		FVector LastGroundedLocation = FVector::ZeroVector; // where a fall started
 		TArray<FPTActionSample> History; // ring buffer
 		int32 HistoryHead = 0;
 		int32 HistoryCount = 0;
