@@ -4,19 +4,28 @@
 #include "Detectors/PTIssueSubsystem.h"
 
 #include "AIController.h"
+#include "Camera/PlayerCameraManager.h"
+#include "Components/BoxComponent.h"
+#include "Components/StaticMeshComponent.h"
 #include "Coverage/PTCoverageSubsystem.h"
 #include "Dom/JsonObject.h"
 #include "Dom/JsonValue.h"
 #include "DrawDebugHelpers.h"
+#include "Engine/StaticMesh.h"
 #include "Engine/World.h"
+#include "EngineUtils.h"
 #include "GameFramework/Character.h"
 #include "GameFramework/CharacterMovementComponent.h"
 #include "GameFramework/PawnMovementComponent.h"
+#include "GameFramework/PlayerController.h"
 #include "GameFramework/WorldSettings.h"
 #include "HAL/FileManager.h"
 #include "HAL/IConsoleManager.h"
 #include "JsonObjectConverter.h"
+#include "Misc/App.h"
+#include "Misc/CommandLine.h"
 #include "Misc/FileHelper.h"
+#include "Misc/Parse.h"
 #include "Misc/Paths.h"
 #include "Navigation/PathFollowingComponent.h"
 #include "PTPlaytestSubsystem.h"
@@ -24,6 +33,11 @@
 #include "Serialization/JsonWriter.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogPlaytestIssues, Log, All);
+
+static TAutoConsoleVariable<float> CVarPTViewBots(
+	TEXT("pt.ViewBots"),
+	0.f,
+	TEXT("During a run, switch the player view to a different bot every N seconds (0 = off). Perf samples use the current view."));
 
 bool UPTIssueSubsystem::DoesSupportWorldType(const EWorldType::Type WorldType) const
 {
@@ -72,6 +86,9 @@ void UPTIssueSubsystem::Tick(float DeltaTime)
 			SampleAccumulator = 0.f;
 			SampleBots();
 		}
+
+		TickViewCycling(DeltaTime);
+		TickPerf();
 	}
 
 	static const IConsoleVariable* DebugVar = IConsoleManager::Get().FindConsoleVariable(TEXT("pt.Debug"));
@@ -104,6 +121,22 @@ void UPTIssueSubsystem::HandleRunStarted(const FPTRunConfig& Config)
 	SampleAccumulator = 0.f;
 	bHasNavFloor = false;
 
+	PerfWindowTime = 0.0;
+	PerfWindowFrames = 0;
+	PerfBaselineMs = 0.f;
+	PerfCooldownUntil = 0.f;
+	ViewSwitchTimer = 0.f;
+	ViewBotIndex = INDEX_NONE;
+
+	float ViewSeconds = 0.f;
+	if (FParse::Value(FCommandLine::Get(), TEXT("PTViewBots="), ViewSeconds))
+	{
+		CVarPTViewBots->Set(ViewSeconds);
+	}
+
+	GatherClipCandidates();
+	GatherForbiddenZones();
+
 	if (const UPTPlaytestSubsystem* Run = RunSubsystem.Get())
 	{
 		for (const TWeakObjectPtr<APawn>& BotPtr : Run->GetBots())
@@ -130,6 +163,16 @@ void UPTIssueSubsystem::HandleRunFinished(const FPTRunConfig& Config)
 		return;
 	}
 	bActive = false;
+
+	// Give the camera back to the player if we were cycling through bot views.
+	if (ViewBotIndex != INDEX_NONE)
+	{
+		if (APlayerController* PlayerController = GetWorld() ? GetWorld()->GetFirstPlayerController() : nullptr)
+		{
+			PlayerController->SetViewTarget(PlayerController->GetPawn());
+		}
+		ViewBotIndex = INDEX_NONE;
+	}
 
 	TMap<EPTIssueType, int32> Counts;
 	for (const FPTIssueRecord& Issue : Issues)
@@ -203,6 +246,14 @@ void UPTIssueSubsystem::SampleBots()
 		}
 		Sample.bMoveIntent = Sample.MoveInput.SizeSquared() > 0.25f || bPathFollowing;
 
+		FPTActionSample PrevSample;
+		const FPTActionSample* PrevPtr = GetSampleAgo(State, 0);
+		const bool bHasPrev = PrevPtr != nullptr;
+		if (bHasPrev)
+		{
+			PrevSample = *PrevPtr;
+		}
+
 		PushSample(State, Sample);
 		State.LastKnownLocation = Sample.Location;
 		if (!Sample.bFalling)
@@ -215,10 +266,19 @@ void UPTIssueSubsystem::SampleBots()
 		{
 			continue;
 		}
-		if (Now >= State.CooldownUntil)
+		if (Now < State.CooldownUntil)
 		{
-			CheckStuck(Index, Sample);
+			continue;
 		}
+		if (bHasPrev && CheckClip(Index, PrevSample, Sample))
+		{
+			continue;
+		}
+		if (CheckForbidden(Index, Sample))
+		{
+			continue;
+		}
+		CheckStuck(Index, Sample);
 	}
 }
 
@@ -349,16 +409,279 @@ bool UPTIssueSubsystem::CheckStuck(int32 BotIndex, const FPTActionSample& Now)
 }
 
 // ---------------------------------------------------------------------------
-// Reporting
+// Clip, forbidden area, perf
 // ---------------------------------------------------------------------------
-void UPTIssueSubsystem::ReportIssue(int32 BotIndex, EPTIssueType Type, const FVector& Location, const FString& Detail)
+void UPTIssueSubsystem::GatherClipCandidates()
 {
-	if (!BotStates.IsValidIndex(BotIndex))
+	NoCollisionMeshes.Reset();
+	UWorld* World = GetWorld();
+	if (!World)
 	{
 		return;
 	}
-	FBotState& State = BotStates[BotIndex];
+
+	// Visible static meshes with collision disabled: anything a bot passes through here is "missing collision".
+	for (TActorIterator<AActor> It(World); It; ++It)
+	{
+		const AActor* Actor = *It;
+		if (Actor->IsA<APawn>())
+		{
+			continue;
+		}
+
+		TInlineComponentArray<UStaticMeshComponent*> MeshComponents(Actor);
+		for (UStaticMeshComponent* MeshComponent : MeshComponents)
+		{
+			const UStaticMesh* Mesh = MeshComponent->GetStaticMesh();
+			if (!Mesh || !MeshComponent->IsVisible() || MeshComponent->bHiddenInGame)
+			{
+				continue;
+			}
+			if (MeshComponent->GetCollisionEnabled() != ECollisionEnabled::NoCollision)
+			{
+				continue;
+			}
+			if (MeshComponent->Bounds.BoxExtent.GetMax() * 2.f > IgnoreMeshesLargerThan)
+			{
+				continue; // sky sphere and similar
+			}
+
+			FNoCollisionMesh& Entry = NoCollisionMeshes.AddDefaulted_GetRef();
+			Entry.Component = MeshComponent;
+			Entry.Transform = MeshComponent->GetComponentTransform();
+			Entry.LocalBox = Mesh->GetBounds().GetBox();
+			Entry.Name = Actor->GetActorNameOrLabel();
+		}
+	}
+
+	UE_LOG(LogPlaytestIssues, Display, TEXT("Clip detector: %d visible meshes without collision."), NoCollisionMeshes.Num());
+}
+
+void UPTIssueSubsystem::GatherForbiddenZones()
+{
+	ForbiddenZones.Reset();
+	UWorld* World = GetWorld();
+	if (!World)
+	{
+		return;
+	}
+
+	for (TActorIterator<AActor> It(World); It; ++It)
+	{
+		AActor* Actor = *It;
+		if (!Actor->ActorHasTag(TEXT("PTForbidden")))
+		{
+			continue;
+		}
+
+		FForbiddenZone& Zone = ForbiddenZones.AddDefaulted_GetRef();
+		Zone.Actor = Actor;
+		Zone.Name = Actor->GetActorNameOrLabel();
+
+		if (const UBoxComponent* Box = Actor->FindComponentByClass<UBoxComponent>())
+		{
+			FTransform BoxTransform = Box->GetComponentTransform();
+			BoxTransform.SetScale3D(FVector::OneVector);
+			Zone.Transform = BoxTransform;
+			Zone.Extent = Box->GetScaledBoxExtent();
+		}
+		else
+		{
+			// Fallback for other actors: their axis-aligned bounds.
+			FVector Origin, Extent;
+			Actor->GetActorBounds(/*bOnlyCollidingComponents*/ false, Origin, Extent);
+			Zone.Transform = FTransform(Origin);
+			Zone.Extent = Extent;
+		}
+	}
+
+	UE_LOG(LogPlaytestIssues, Display, TEXT("Forbidden-area detector: %d volumes tagged PTForbidden."), ForbiddenZones.Num());
+}
+
+bool UPTIssueSubsystem::CheckClip(int32 BotIndex, const FPTActionSample& Prev, const FPTActionSample& Now)
+{
+	const float StepDistance = FVector::Dist(Prev.Location, Now.Location);
+	if (StepDistance < 1.f || StepDistance > ClipMaxStepDistance)
+	{
+		return false; // not moving, or teleported
+	}
+
+	// 1) Missing collision: the bot's path since the last sample crossed a visible mesh that has no collision.
+	for (const FNoCollisionMesh& Entry : NoCollisionMeshes)
+	{
+		if (!Entry.Component.IsValid())
+		{
+			continue;
+		}
+		const FVector LocalStart = Entry.Transform.InverseTransformPosition(Prev.Location);
+		const FVector LocalEnd = Entry.Transform.InverseTransformPosition(Now.Location);
+		const FVector LocalDirection = (LocalEnd - LocalStart).GetSafeNormal();
+		if (Entry.LocalBox.IsInside(LocalEnd) ||
+			FMath::LineBoxIntersection(Entry.LocalBox, LocalStart, LocalEnd, LocalDirection))
+		{
+			ReportIssue(BotIndex, EPTIssueType::Clip, Now.Location,
+				FString::Printf(TEXT("Passed through visible mesh without collision: %s"), *Entry.Name));
+			return true;
+		}
+	}
+
+	// 2) Tunnelling: the bot's path crossed geometry that DOES have collision (it should have been blocked).
+	UWorld* World = GetWorld();
+	const APawn* Bot = BotStates[BotIndex].Pawn.Get();
+	if (World && Bot)
+	{
+		FCollisionQueryParams Params(SCENE_QUERY_STAT(PTClipTrace), /*bTraceComplex*/ false, Bot);
+		FHitResult Hit;
+		if (World->LineTraceSingleByObjectType(Hit, Prev.Location, Now.Location, FCollisionObjectQueryParams(ECC_WorldStatic), Params))
+		{
+			const AActor* HitActor = Hit.GetActor();
+			ReportIssue(BotIndex, EPTIssueType::Clip, Hit.ImpactPoint,
+				FString::Printf(TEXT("Moved through blocking geometry: %s"), HitActor ? *HitActor->GetActorNameOrLabel() : TEXT("unknown")));
+			return true;
+		}
+	}
+
+	return false;
+}
+
+bool UPTIssueSubsystem::CheckForbidden(int32 BotIndex, const FPTActionSample& Now)
+{
+	for (const FForbiddenZone& Zone : ForbiddenZones)
+	{
+		const FVector Local = Zone.Transform.InverseTransformPosition(Now.Location);
+		if (FMath::Abs(Local.X) <= Zone.Extent.X && FMath::Abs(Local.Y) <= Zone.Extent.Y && FMath::Abs(Local.Z) <= Zone.Extent.Z)
+		{
+			ReportIssue(BotIndex, EPTIssueType::ForbiddenArea, Now.Location,
+				FString::Printf(TEXT("Entered forbidden volume: %s"), *Zone.Name));
+			return true;
+		}
+	}
+	return false;
+}
+
+void UPTIssueSubsystem::TickViewCycling(float DeltaTime)
+{
+	const float Interval = CVarPTViewBots.GetValueOnGameThread();
+	if (Interval <= 0.f || BotStates.IsEmpty())
+	{
+		return;
+	}
+
+	ViewSwitchTimer -= DeltaTime;
+	if (ViewSwitchTimer > 0.f)
+	{
+		return;
+	}
+	ViewSwitchTimer = Interval;
+
+	APlayerController* PlayerController = GetWorld() ? GetWorld()->GetFirstPlayerController() : nullptr;
+	if (!PlayerController)
+	{
+		return;
+	}
+
+	// Next bot that still exists.
+	for (int32 Attempt = 0; Attempt < BotStates.Num(); ++Attempt)
+	{
+		ViewBotIndex = (ViewBotIndex + 1) % BotStates.Num();
+		if (APawn* Bot = BotStates[ViewBotIndex].Pawn.Get())
+		{
+			PlayerController->SetViewTarget(Bot);
+			return;
+		}
+	}
+}
+
+void UPTIssueSubsystem::TickPerf()
+{
+	if (!FApp::CanEverRender())
+	{
+		return; // headless (-nullrhi) runs have no meaningful frame time
+	}
+
+	PerfWindowTime += FApp::GetDeltaTime();
+	++PerfWindowFrames;
+	if (PerfWindowTime < PerfWindowSeconds)
+	{
+		return;
+	}
+
+	const float WindowMs = static_cast<float>(1000.0 * PerfWindowTime / PerfWindowFrames);
+	PerfWindowTime = 0.0;
+	PerfWindowFrames = 0;
+
 	const UPTPlaytestSubsystem* Run = RunSubsystem.Get();
+	const float Now = Run ? Run->GetElapsedSeconds() : 0.f;
+	if (Now < PerfWarmupSeconds)
+	{
+		PerfBaselineMs = PerfBaselineMs <= 0.f ? WindowMs : FMath::Min(PerfBaselineMs, WindowMs);
+		return;
+	}
+	if (PerfBaselineMs <= 0.f)
+	{
+		PerfBaselineMs = WindowMs;
+		return;
+	}
+
+	const bool bSpike = WindowMs > PerfBaselineMs * PerfSpikeFactor && WindowMs > PerfBaselineMs + PerfMinSpikeMs;
+	if (!bSpike)
+	{
+		// Slow-moving baseline from normal windows only.
+		PerfBaselineMs = FMath::Lerp(PerfBaselineMs, WindowMs, 0.05f);
+		return;
+	}
+	if (Now < PerfCooldownUntil)
+	{
+		return;
+	}
+	PerfCooldownUntil = Now + PerfCooldownSeconds;
+
+	// Perf depends on what is being rendered: report where the active camera is and where it looks.
+	FVector ViewLocation = FVector::ZeroVector;
+	FRotator ViewRotation = FRotator::ZeroRotator;
+	if (const APlayerController* PlayerController = GetWorld() ? GetWorld()->GetFirstPlayerController() : nullptr)
+	{
+		if (PlayerController->PlayerCameraManager)
+		{
+			ViewLocation = PlayerController->PlayerCameraManager->GetCameraLocation();
+			ViewRotation = PlayerController->PlayerCameraManager->GetCameraRotation();
+		}
+	}
+
+	const int32 ViewedBot = (CVarPTViewBots.GetValueOnGameThread() > 0.f) ? ViewBotIndex : INDEX_NONE;
+	ReportIssue(ViewedBot, EPTIssueType::PerfSpike, ViewLocation,
+		FString::Printf(TEXT("Frame time %.1f ms vs baseline %.1f ms, camera rotation (P=%.0f Y=%.0f)"),
+			WindowMs, PerfBaselineMs, ViewRotation.Pitch, ViewRotation.Yaw),
+		/*bAffectsBot*/ false);
+}
+
+// ---------------------------------------------------------------------------
+// Reporting
+// ---------------------------------------------------------------------------
+void UPTIssueSubsystem::ReportIssue(int32 BotIndex, EPTIssueType Type, const FVector& Location, const FString& Detail, bool bAffectsBot)
+{
+	const UPTPlaytestSubsystem* Run = RunSubsystem.Get();
+
+	if (!BotStates.IsValidIndex(BotIndex))
+	{
+		// Not tied to a bot (e.g. perf spike seen from the player's camera).
+		FPTIssueRecord& Issue = Issues.AddDefaulted_GetRef();
+		Issue.Type = Type;
+		Issue.Location = Location;
+		Issue.Time = Run ? Run->GetElapsedSeconds() : 0.f;
+		Issue.BotIndex = INDEX_NONE;
+		Issue.Detail = Detail;
+		if (Run)
+		{
+			Issue.Seed = Run->GetConfig().Seed;
+			Issue.Walker = UPTPlaytestSubsystem::WalkerToString(Run->GetConfig().Walker);
+		}
+		UE_LOG(LogPlaytestIssues, Warning, TEXT("ISSUE %s  (view)  t=%.1fs  at (%.0f, %.0f, %.0f)  %s"),
+			*IssueTypeToString(Type), Issue.Time, Location.X, Location.Y, Location.Z, *Detail);
+		return;
+	}
+
+	FBotState& State = BotStates[BotIndex];
 
 	FPTIssueRecord& Issue = Issues.AddDefaulted_GetRef();
 	Issue.Type = Type;
@@ -380,6 +703,11 @@ void UPTIssueSubsystem::ReportIssue(int32 BotIndex, EPTIssueType Type, const FVe
 
 	UE_LOG(LogPlaytestIssues, Warning, TEXT("ISSUE %s  bot=%d  t=%.1fs  at (%.0f, %.0f, %.0f)  %s"),
 		*IssueTypeToString(Type), BotIndex, Issue.Time, Location.X, Location.Y, Location.Z, *Detail);
+
+	if (!bAffectsBot)
+	{
+		return;
+	}
 
 	State.CooldownUntil = Issue.Time + IssueCooldownSeconds;
 

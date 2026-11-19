@@ -4,6 +4,10 @@
     {
       "id": "floor_hole",
       "expectedIssue": "OutOfWorld",
+      "acceptedIssues": [
+        "OutOfWorld",
+        "Clip"
+      ],
       "location": [
         -1000,
         1000,
@@ -15,6 +19,9 @@
     {
       "id": "edge_gap",
       "expectedIssue": "OutOfWorld",
+      "acceptedIssues": [
+        "OutOfWorld"
+      ],
       "location": [
         2000,
         200,
@@ -26,6 +33,9 @@
     {
       "id": "stuck_shaft",
       "expectedIssue": "Stuck",
+      "acceptedIssues": [
+        "Stuck"
+      ],
       "location": [
         1000,
         1000,
@@ -37,6 +47,9 @@
     {
       "id": "clip_wall",
       "expectedIssue": "Clip",
+      "acceptedIssues": [
+        "Clip"
+      ],
       "location": [
         -1190,
         -1400,
@@ -48,10 +61,13 @@
     {
       "id": "forbidden_ledge",
       "expectedIssue": "ForbiddenArea",
+      "acceptedIssues": [
+        "ForbiddenArea"
+      ],
       "location": [
         1400,
         -1400,
-        100
+        70
       ],
       "radius": 250,
       "description": "Ledge designers did not intend to be reachable; reachable only with a jump."
@@ -59,6 +75,9 @@
     {
       "id": "perf_lights",
       "expectedIssue": "PerfSpike",
+      "acceptedIssues": [
+        "PerfSpike"
+      ],
       "location": [
         0,
         1600,

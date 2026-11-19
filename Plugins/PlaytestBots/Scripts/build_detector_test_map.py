@@ -53,10 +53,11 @@ def box(label, center, size, folder="PT/Geometry", collision=True, pitch=0.0, ya
     return finish(actor, label, folder)
 
 
-def add_bug(bug_id, expected_issue, location, radius, description):
+def add_bug(bug_id, expected_issue, location, radius, description, also_accept=()):
     ground_truth["bugs"].append({
         "id": bug_id,
         "expectedIssue": expected_issue,
+        "acceptedIssues": [expected_issue] + list(also_accept),
         "location": list(location),
         "radius": radius,
         "description": description,
@@ -130,7 +131,8 @@ for ix in range(10):
             collision=not is_hole)
 
 add_bug("floor_hole", "OutOfWorld", (FLOOR_HOLE_TILE[0], FLOOR_HOLE_TILE[1], 0), 400,
-        "Floor tile is visible but has NoCollision; bots fall through into the void.")
+        "Floor tile is visible but has NoCollision; bots fall through into the void.",
+        also_accept=("Clip",))  # the clip detector catches the bot passing through the tile
 
 # ---------------------------------------------------------------------------
 # Perimeter walls (3 m high) with one 4 m section missing on the +X side (edge gap).
@@ -184,11 +186,11 @@ add_bug("clip_wall", "Clip", (rx + 210, ry, ROOM_H / 2), 300,
         "Wall segment with NoCollision; bots walk through it into a closed room.")
 
 # ---------------------------------------------------------------------------
-# Forbidden ledge: 1 m high block, too high to step onto (navmesh step is 35 cm), reachable only by jumping.
+# Forbidden ledge: 70 cm high block, too high to step onto (character steps 45 cm, navmesh 35 cm), reachable only by jumping.
 # Marked with a TriggerBox tagged "PTForbidden" (the forbidden-area detector will look for this tag).
 # ---------------------------------------------------------------------------
 lx, ly = 1400, -1400
-LEDGE_H = 100
+LEDGE_H = 70
 box("BUG_ForbiddenLedge", (lx, ly, LEDGE_H / 2), (300, 300, LEDGE_H), folder="PT/Bugs")
 trigger = spawn(unreal.TriggerBox, (lx, ly, LEDGE_H + 60))
 trigger.get_component_by_class(unreal.BoxComponent).set_box_extent(unreal.Vector(150, 150, 60))

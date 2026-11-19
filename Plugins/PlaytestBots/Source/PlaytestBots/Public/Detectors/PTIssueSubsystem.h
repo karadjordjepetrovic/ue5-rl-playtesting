@@ -26,8 +26,9 @@ public:
 	virtual void Tick(float DeltaTime) override;
 	virtual TStatId GetStatId() const override;
 
-	/** Adds an issue for a bot (attaches its action history, applies cooldown, optionally respawns it). */
-	void ReportIssue(int32 BotIndex, EPTIssueType Type, const FVector& Location, const FString& Detail);
+	/** Adds an issue. With bAffectsBot, attaches the bot's action history, applies cooldown and optionally respawns it.
+	 *  BotIndex may be INDEX_NONE for issues not tied to a bot (e.g. perf spikes seen from the player camera). */
+	void ReportIssue(int32 BotIndex, EPTIssueType Type, const FVector& Location, const FString& Detail, bool bAffectsBot = true);
 
 	const TArray<FPTIssueRecord>& GetIssues() const { return Issues; }
 	static FString IssueTypeToString(EPTIssueType Type);
@@ -44,10 +45,37 @@ public:
 	bool bRespawnAfterIssue = true;       // teleport the bot back to its spawn after an issue
 	float ClusterSize = 200.f;            // cm grid used to group issues in the report
 
+	// Clip detector
+	float ClipMaxStepDistance = 300.f;    // cm between two samples; larger = teleport, not a clip
+	float IgnoreMeshesLargerThan = 5000.f; // cm; skips sky spheres and similar huge meshes
+
+	// Perf detector (rendered runs only)
+	float PerfWindowSeconds = 0.5f;       // frame times are averaged over this window
+	float PerfWarmupSeconds = 5.f;        // ignore shader-compile hitches at run start
+	float PerfSpikeFactor = 1.5f;         // window average vs. running baseline
+	float PerfMinSpikeMs = 4.f;           // and at least this many ms above baseline
+	float PerfCooldownSeconds = 5.f;
+
 protected:
 	virtual bool DoesSupportWorldType(const EWorldType::Type WorldType) const override;
 
 private:
+	struct FNoCollisionMesh
+	{
+		TWeakObjectPtr<UPrimitiveComponent> Component;
+		FTransform Transform = FTransform::Identity;
+		FBox LocalBox = FBox(ForceInit);
+		FString Name;
+	};
+
+	struct FForbiddenZone
+	{
+		TWeakObjectPtr<AActor> Actor;
+		FTransform Transform = FTransform::Identity; // box transform without scale
+		FVector Extent = FVector::ZeroVector;        // scaled half-size
+		FString Name;
+	};
+
 	struct FBotState
 	{
 		TWeakObjectPtr<APawn> Pawn;
@@ -71,6 +99,13 @@ private:
 
 	bool CheckOutOfWorld(int32 BotIndex, const FPTActionSample& Now);
 	bool CheckStuck(int32 BotIndex, const FPTActionSample& Now);
+	bool CheckClip(int32 BotIndex, const FPTActionSample& Prev, const FPTActionSample& Now);
+	bool CheckForbidden(int32 BotIndex, const FPTActionSample& Now);
+	void TickPerf();
+	void TickViewCycling(float DeltaTime);
+
+	void GatherClipCandidates();
+	void GatherForbiddenZones();
 
 	void RespawnBot(FBotState& State) const;
 	void WriteReport() const;
@@ -81,6 +116,18 @@ private:
 
 	TArray<FBotState> BotStates;
 	TArray<FPTIssueRecord> Issues;
+	TArray<FNoCollisionMesh> NoCollisionMeshes;
+	TArray<FForbiddenZone> ForbiddenZones;
+
+	// Perf state
+	double PerfWindowTime = 0.0;
+	int32 PerfWindowFrames = 0;
+	float PerfBaselineMs = 0.f;
+	float PerfCooldownUntil = 0.f;
+
+	// View cycling (pt.ViewBots)
+	float ViewSwitchTimer = 0.f;
+	int32 ViewBotIndex = INDEX_NONE;
 
 	float SampleAccumulator = 0.f;
 	float LowestNavZ = 0.f;
