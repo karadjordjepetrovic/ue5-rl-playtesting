@@ -18,6 +18,8 @@
 #include "Misc/Paths.h"
 #include "PTCollision.h"
 #include "TimerManager.h"
+#include "Walkers/PTBotControllerBase.h"
+#include "Walkers/PTRandomWalkerController.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogPlaytest, Log, All);
 
@@ -271,8 +273,8 @@ TSubclassOf<AController> UPTPlaytestSubsystem::ResolveControllerClass() const
 {
 	switch (Config.Walker)
 	{
-	// TODO step 5: return APTRandomWalkerController::StaticClass();
 	case EPTWalkerType::Random:
+		return APTRandomWalkerController::StaticClass();
 	// TODO step 5: return APTFrontierWalkerController::StaticClass();
 	case EPTWalkerType::Frontier:
 	// TODO Phase 2: Learning Agents controller
@@ -351,6 +353,12 @@ APawn* UPTPlaytestSubsystem::SpawnBot(int32 Index, const TArray<AActor*>& Player
 
 	Bot->AIControllerClass = ResolveControllerClass();
 	Bot->SpawnDefaultController();
+
+	// Give each bot brain its index and a seed derived from the run seed.
+	if (APTBotControllerBase* BotController = Cast<APTBotControllerBase>(Bot->GetController()))
+	{
+		BotController->InitBot(Index, Config.Seed);
+	}
 
 	return Bot;
 }

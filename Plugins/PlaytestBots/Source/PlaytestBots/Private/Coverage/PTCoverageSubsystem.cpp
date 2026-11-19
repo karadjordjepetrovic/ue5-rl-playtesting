@@ -9,6 +9,7 @@
 #include "Engine/World.h"
 #include "EngineUtils.h"
 #include "GameFramework/Pawn.h"
+#include "GameFramework/PawnMovementComponent.h"
 #include "GameFramework/PlayerStart.h"
 #include "HAL/FileManager.h"
 #include "HAL/IConsoleManager.h"
@@ -218,6 +219,14 @@ void UPTCoverageSubsystem::SampleBots()
 		if (!Bot)
 		{
 			continue; // destroyed, e.g. fell below KillZ
+		}
+
+		// Skip airborne samples: mid-jump positions are not "standing" coverage and would show up
+		// as fake outside-navmesh cells. A bot that lands somewhere unexpected is still recorded.
+		const UPawnMovementComponent* Movement = Bot->GetMovementComponent();
+		if (Movement && Movement->IsFalling())
+		{
+			continue;
 		}
 
 		// Feet location for characters, so it lines up with navmesh points.
