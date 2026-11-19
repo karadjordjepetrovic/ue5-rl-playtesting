@@ -26,7 +26,7 @@ struct PLAYTESTBOTS_API FPTActionSample
 	UPROPERTY() float Time = 0.f;
 	UPROPERTY() FVector Location = FVector::ZeroVector;
 	UPROPERTY() FVector Velocity = FVector::ZeroVector;
-	UPROPERTY() FVector MoveInput = FVector::ZeroVector;
+	UPROPERTY() FVector MoveInput = FVector::ZeroVector;   // intended direction: input vector, or path-following direction
 	UPROPERTY() bool bMoveIntent = false;   // input held, or path following active
 	UPROPERTY() bool bJumping = false;
 	UPROPERTY() bool bCrouched = false;

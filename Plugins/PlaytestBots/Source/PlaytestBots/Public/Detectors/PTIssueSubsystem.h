@@ -38,6 +38,7 @@ public:
 	float StuckWindowSeconds = 5.f;
 	float StuckMaxDisplacement = 50.f;    // cm moved within the window
 	float StuckMinIntentFraction = 0.8f;  // share of the window the bot was trying to move
+	float StuckMaxDirectionConsistency = 0.5f; // 1 = always the same direction (just pushing into a wall), lower = tried different directions
 	float FallMarginBelowNav = 500.f;     // cm below the lowest navmesh floor = out of world
 	float IssueCooldownSeconds = 10.f;    // per bot, avoids spamming the same issue
 	bool bRespawnAfterIssue = true;       // teleport the bot back to its spawn after an issue

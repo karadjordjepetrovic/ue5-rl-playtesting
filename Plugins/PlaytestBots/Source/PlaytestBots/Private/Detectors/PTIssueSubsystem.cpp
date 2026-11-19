@@ -192,6 +192,14 @@ void UPTIssueSubsystem::SampleBots()
 
 		const AAIController* BotAI = Cast<AAIController>(Bot->GetController());
 		const bool bPathFollowing = BotAI && BotAI->GetMoveStatus() == EPathFollowingStatus::Moving;
+		if (bPathFollowing && Sample.MoveInput.IsNearlyZero())
+		{
+			// Path-following bots have no input vector; use the direction the path wants instead.
+			if (const UPathFollowingComponent* PathFollowing = BotAI->GetPathFollowingComponent())
+			{
+				Sample.MoveInput = PathFollowing->GetCurrentDirection();
+			}
+		}
 		Sample.bMoveIntent = Sample.MoveInput.SizeSquared() > 0.25f || bPathFollowing;
 
 		PushSample(State, Sample);
@@ -298,12 +306,20 @@ bool UPTIssueSubsystem::CheckStuck(int32 BotIndex, const FPTActionSample& Now)
 	}
 
 	int32 IntentSamples = 0;
+	int32 DirectionSamples = 0;
+	FVector DirectionSum = FVector::ZeroVector;
 	for (int32 Ago = 0; Ago < WindowSamples; ++Ago)
 	{
 		const FPTActionSample* Sample = GetSampleAgo(State, Ago);
 		if (Sample && Sample->bMoveIntent)
 		{
 			++IntentSamples;
+			const FVector Direction = Sample->MoveInput.GetSafeNormal2D();
+			if (!Direction.IsNearlyZero())
+			{
+				DirectionSum += Direction;
+				++DirectionSamples;
+			}
 		}
 	}
 	const float IntentFraction = static_cast<float>(IntentSamples) / WindowSamples;
@@ -312,9 +328,16 @@ bool UPTIssueSubsystem::CheckStuck(int32 BotIndex, const FPTActionSample& Now)
 		return false; // standing still on purpose
 	}
 
+	// Length of the average direction: ~1 = kept pushing the same way (e.g. into a wall), not a trap.
+	const float DirectionConsistency = DirectionSamples > 0 ? DirectionSum.Size() / DirectionSamples : 1.f;
+	if (DirectionConsistency > StuckMaxDirectionConsistency)
+	{
+		return false;
+	}
+
 	ReportIssue(BotIndex, EPTIssueType::Stuck, Now.Location,
-		FString::Printf(TEXT("Moved %.0f cm in %.0f s while trying to move %.0f%% of the time"),
-			Displacement, StuckWindowSeconds, IntentFraction * 100.f));
+		FString::Printf(TEXT("Moved %.0f cm in %.0f s while trying to move %.0f%% of the time in varied directions (consistency %.2f)"),
+			Displacement, StuckWindowSeconds, IntentFraction * 100.f, DirectionConsistency));
 	return true;
 }
 
