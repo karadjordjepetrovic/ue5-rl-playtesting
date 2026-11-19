@@ -31,6 +31,7 @@ public:
 
 	const TMap<FIntVector, int32>& GetVisits() const { return Visits; }
 	const TSet<FIntVector>& GetReachableCells() const { return ReachableCells; }
+	const TArray<FIntVector>& GetReachableCellArray() const { return ReachableCellArray; } // sorted, for random sampling
 	int32 GetVisitedReachableCount() const { return VisitedReachable; }
 	float GetCoveragePercent() const;
 
@@ -67,6 +68,7 @@ private:
 
 	TMap<FIntVector, int32> Visits;   // cell -> number of samples a bot was in it
 	TSet<FIntVector> ReachableCells;  // cells the navmesh says are reachable from the start
+	TArray<FIntVector> ReachableCellArray;
 	int32 VisitedReachable = 0;
 	TArray<FTimelinePoint> Timeline;
 

@@ -157,6 +157,7 @@ void UPTCoverageSubsystem::ResetCoverage()
 {
 	Visits.Reset();
 	ReachableCells.Reset();
+	ReachableCellArray.Reset();
 	VisitedReachable = 0;
 	Timeline.Reset();
 	SampleAccumulator = 0.f;
@@ -200,6 +201,15 @@ void UPTCoverageSubsystem::SampleReachableCells()
 			ReachableCells.Add(LocationToCell(Point.Location));
 		}
 	}
+
+	// Sorted array so walkers can sample cells by index in a stable order.
+	ReachableCellArray = ReachableCells.Array();
+	ReachableCellArray.Sort([](const FIntVector& A, const FIntVector& B)
+	{
+		if (A.X != B.X) { return A.X < B.X; }
+		if (A.Y != B.Y) { return A.Y < B.Y; }
+		return A.Z < B.Z;
+	});
 
 	UE_LOG(LogPlaytestCoverage, Display, TEXT("Reachable area: %d cells of %.0f cm (%d samples, %.0f ms)."),
 		ReachableCells.Num(), CellSize, ReachableSamples, (FPlatformTime::Seconds() - StartTime) * 1000.0);

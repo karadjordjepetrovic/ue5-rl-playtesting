@@ -19,6 +19,7 @@
 #include "PTCollision.h"
 #include "TimerManager.h"
 #include "Walkers/PTBotControllerBase.h"
+#include "Walkers/PTFrontierWalkerController.h"
 #include "Walkers/PTRandomWalkerController.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogPlaytest, Log, All);
@@ -275,8 +276,8 @@ TSubclassOf<AController> UPTPlaytestSubsystem::ResolveControllerClass() const
 	{
 	case EPTWalkerType::Random:
 		return APTRandomWalkerController::StaticClass();
-	// TODO step 5: return APTFrontierWalkerController::StaticClass();
 	case EPTWalkerType::Frontier:
+		return APTFrontierWalkerController::StaticClass();
 	// TODO Phase 2: Learning Agents controller
 	case EPTWalkerType::Policy:
 	case EPTWalkerType::Idle:
