@@ -1,0 +1,103 @@
+{
+  "map": "/Game/PlaytestBots/Maps/PT_DetectorTest",
+  "bugs": [
+    {
+      "id": "floor_hole",
+      "expectedIssue": "OutOfWorld",
+      "location": [
+        -1000,
+        1000,
+        0
+      ],
+      "radius": 400,
+      "description": "Floor tile is visible but has NoCollision; bots fall through into the void."
+    },
+    {
+      "id": "edge_gap",
+      "expectedIssue": "OutOfWorld",
+      "location": [
+        2000,
+        200,
+        0
+      ],
+      "radius": 700,
+      "description": "Missing perimeter wall section; bots walk off the edge of the arena."
+    },
+    {
+      "id": "stuck_shaft",
+      "expectedIssue": "Stuck",
+      "location": [
+        1000,
+        1000,
+        -200
+      ],
+      "radius": 250,
+      "description": "Narrow 2 m deep shaft; a bot that falls in cannot get out."
+    },
+    {
+      "id": "clip_wall",
+      "expectedIssue": "Clip",
+      "location": [
+        -1190,
+        -1400,
+        125.0
+      ],
+      "radius": 300,
+      "description": "Wall segment with NoCollision; bots walk through it into a closed room."
+    },
+    {
+      "id": "forbidden_ledge",
+      "expectedIssue": "ForbiddenArea",
+      "location": [
+        1400,
+        -1400,
+        100
+      ],
+      "radius": 250,
+      "description": "Ledge designers did not intend to be reachable; reachable only with a jump."
+    },
+    {
+      "id": "perf_lights",
+      "expectedIssue": "PerfSpike",
+      "location": [
+        0,
+        1600,
+        0
+      ],
+      "radius": 800,
+      "description": "40 overlapping movable shadow-casting point lights; GPU cost spikes when looking at this area."
+    }
+  ],
+  "controls": [
+    {
+      "id": "stairs_platform",
+      "location": [
+        0,
+        -1450,
+        100
+      ],
+      "radius": 300,
+      "description": "Stairs up to a platform."
+    },
+    {
+      "id": "ramp_platform",
+      "location": [
+        -1400,
+        0,
+        50
+      ],
+      "radius": 400,
+      "description": "Ramp up to a platform."
+    },
+    {
+      "id": "free_wall",
+      "location": [
+        600,
+        400,
+        0
+      ],
+      "radius": 300,
+      "description": "Single wall; pushing against it is not a trap."
+    }
+  ]
+}
