@@ -41,4 +41,12 @@ Headless run (available once Phase 1 is complete):
 
 ## Baseline results
 
-To be filled in at the end of Phase 1.
+Headless runs on `PT_DetectorTest`, 16 bots, 180 s, 3 seeds per walker (perf not detectable headless, so bugs out of 5).
+
+| Walker | Coverage | Bugs found | Control FP | Unexplained |
+| --- | --- | --- | --- | --- |
+| Random | 91.7-95.5% | 3/5 every seed (floor hole, edge gap, clip wall) | 0 | 0-3 |
+| Frontier | 98.9-99.2% | 1/5 every seed (clip wall) | 0 | 0 |
+
+Neither baseline finds the stuck shaft or the jump-only ledge; that is the target for the RL agent in Phase 2.
+

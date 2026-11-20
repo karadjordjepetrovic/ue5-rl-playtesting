@@ -34,6 +34,11 @@
 
 DEFINE_LOG_CATEGORY_STATIC(LogPlaytestIssues, Log, All);
 
+static TAutoConsoleVariable<int32> CVarPTTrackPlayer(
+	TEXT("pt.TrackPlayer"),
+	0,
+	TEXT("1 = the issue detectors also watch the player's pawn during a run (for testing detectors by hand)."));
+
 static TAutoConsoleVariable<float> CVarPTViewBots(
 	TEXT("pt.ViewBots"),
 	0.f,
@@ -124,6 +129,7 @@ void UPTIssueSubsystem::HandleRunStarted(const FPTRunConfig& Config)
 	PerfWindowTime = 0.0;
 	PerfWindowFrames = 0;
 	PerfBaselineMs = 0.f;
+	PerfRecentMs.Reset();
 	PerfCooldownUntil = 0.f;
 	ViewSwitchTimer = 0.f;
 	ViewBotIndex = INDEX_NONE;
@@ -136,6 +142,22 @@ void UPTIssueSubsystem::HandleRunStarted(const FPTRunConfig& Config)
 
 	GatherClipCandidates();
 	GatherForbiddenZones();
+
+	// Optional: watch the player too, so detectors can be tested by hand.
+	if (CVarPTTrackPlayer.GetValueOnGameThread() > 0)
+	{
+		const APlayerController* PlayerController = GetWorld() ? GetWorld()->GetFirstPlayerController() : nullptr;
+		if (APawn* PlayerPawn = PlayerController ? PlayerController->GetPawn() : nullptr)
+		{
+			FBotState& State = BotStates.AddDefaulted_GetRef();
+			State.Pawn = PlayerPawn;
+			State.History.SetNum(ActionHistorySamples);
+			State.SpawnTransform = PlayerPawn->GetActorTransform();
+			State.LastKnownLocation = PlayerPawn->GetActorLocation();
+			State.LastGroundedLocation = State.LastKnownLocation;
+			UE_LOG(LogPlaytestIssues, Display, TEXT("Tracking the player pawn as bot %d."), BotStates.Num() - 1);
+		}
+	}
 
 	if (const UPTPlaytestSubsystem* Run = RunSubsystem.Get())
 	{
@@ -344,6 +366,27 @@ bool UPTIssueSubsystem::CheckOutOfWorld(int32 BotIndex, const FPTActionSample& N
 		return true;
 	}
 
+	// Navmesh-independent: no normal jump or drop lasts this long.
+	const int32 FallSamples = FMath::RoundToInt(MaxFallSeconds / SampleInterval);
+	// Also require a real drop, so bots hopping against a wall (brief landings missed at 10 Hz) don't count.
+	if (Now.bFalling && BotStates[BotIndex].HistoryCount > FallSamples &&
+		Now.Location.Z < BotStates[BotIndex].LastGroundedLocation.Z - 200.f)
+	{
+		bool bFallingWholeTime = true;
+		for (int32 Ago = 0; Ago < FallSamples && bFallingWholeTime; ++Ago)
+		{
+			const FPTActionSample* Sample = GetSampleAgo(BotStates[BotIndex], Ago);
+			bFallingWholeTime = Sample && Sample->bFalling;
+		}
+		if (bFallingWholeTime)
+		{
+			ReportIssue(BotIndex, EPTIssueType::OutOfWorld, BotStates[BotIndex].LastGroundedLocation,
+				FString::Printf(TEXT("Falling for over %.0f s and %.0f cm below the last floor; location = where the fall started"),
+					MaxFallSeconds, BotStates[BotIndex].LastGroundedLocation.Z - Now.Location.Z));
+			return true;
+		}
+	}
+
 	const AWorldSettings* Settings = GetWorld() ? GetWorld()->GetWorldSettings() : nullptr;
 	if (Settings && Settings->bEnableWorldBoundsChecks && Now.Location.Z < Settings->KillZ + 200.f)
 	{
@@ -366,7 +409,16 @@ bool UPTIssueSubsystem::CheckStuck(int32 BotIndex, const FPTActionSample& Now)
 		return false; // not enough history yet (e.g. just spawned or respawned)
 	}
 
-	const float Displacement = FVector::Dist(Now.Location, Old->Location);
+	// Every position in the window must stay close to the current one. Comparing only the window's start and
+	// end flags bots that walked away and came back.
+	float Displacement = 0.f;
+	for (int32 Ago = 0; Ago <= WindowSamples; ++Ago)
+	{
+		if (const FPTActionSample* Sample = GetSampleAgo(State, Ago))
+		{
+			Displacement = FMath::Max(Displacement, FVector::Dist(Now.Location, Sample->Location));
+		}
+	}
 	if (Displacement > StuckMaxDisplacement)
 	{
 		return false;
@@ -403,7 +455,7 @@ bool UPTIssueSubsystem::CheckStuck(int32 BotIndex, const FPTActionSample& Now)
 	}
 
 	ReportIssue(BotIndex, EPTIssueType::Stuck, Now.Location,
-		FString::Printf(TEXT("Moved %.0f cm in %.0f s while trying to move %.0f%% of the time in varied directions (consistency %.2f)"),
+		FString::Printf(TEXT("Stayed within %.0f cm for %.0f s while trying to move %.0f%% of the time in varied directions (consistency %.2f)"),
 			Displacement, StuckWindowSeconds, IntentFraction * 100.f, DirectionConsistency));
 	return true;
 }
@@ -614,20 +666,32 @@ void UPTIssueSubsystem::TickPerf()
 	const float Now = Run ? Run->GetElapsedSeconds() : 0.f;
 	if (Now < PerfWarmupSeconds)
 	{
-		PerfBaselineMs = PerfBaselineMs <= 0.f ? WindowMs : FMath::Min(PerfBaselineMs, WindowMs);
-		return;
+		return; // shader compiles and streaming at start
 	}
-	if (PerfBaselineMs <= 0.f)
+
+	// Baseline = median of the last ~30 s. A sustained slower frame rate becomes the new normal;
+	// only short jumps above it count as spikes.
+	const int32 MaxRecent = FMath::Max(1, FMath::RoundToInt(30.f / PerfWindowSeconds));
+	const bool bHasBaseline = PerfRecentMs.Num() >= 10;
+	if (bHasBaseline)
 	{
-		PerfBaselineMs = WindowMs;
+		TArray<float> Sorted = PerfRecentMs;
+		Sorted.Sort();
+		PerfBaselineMs = Sorted[Sorted.Num() / 2];
+	}
+	PerfRecentMs.Add(WindowMs);
+	if (PerfRecentMs.Num() > MaxRecent)
+	{
+		PerfRecentMs.RemoveAt(0);
+	}
+	if (!bHasBaseline)
+	{
 		return;
 	}
 
 	const bool bSpike = WindowMs > PerfBaselineMs * PerfSpikeFactor && WindowMs > PerfBaselineMs + PerfMinSpikeMs;
 	if (!bSpike)
 	{
-		// Slow-moving baseline from normal windows only.
-		PerfBaselineMs = FMath::Lerp(PerfBaselineMs, WindowMs, 0.05f);
 		return;
 	}
 	if (Now < PerfCooldownUntil)
@@ -648,10 +712,24 @@ void UPTIssueSubsystem::TickPerf()
 		}
 	}
 
+	// Report the point the camera is looking at (where the expensive content most likely is),
+	// and keep the camera position in the detail text.
+	FVector LookAt = ViewLocation;
+	if (UWorld* World = GetWorld())
+	{
+		FHitResult Hit;
+		const FVector TraceEnd = ViewLocation + ViewRotation.Vector() * 20000.f;
+		FCollisionQueryParams Params(SCENE_QUERY_STAT(PTPerfLookAt), /*bTraceComplex*/ false);
+		if (World->LineTraceSingleByChannel(Hit, ViewLocation, TraceEnd, ECC_Visibility, Params))
+		{
+			LookAt = Hit.ImpactPoint;
+		}
+	}
+
 	const int32 ViewedBot = (CVarPTViewBots.GetValueOnGameThread() > 0.f) ? ViewBotIndex : INDEX_NONE;
-	ReportIssue(ViewedBot, EPTIssueType::PerfSpike, ViewLocation,
-		FString::Printf(TEXT("Frame time %.1f ms vs baseline %.1f ms, camera rotation (P=%.0f Y=%.0f)"),
-			WindowMs, PerfBaselineMs, ViewRotation.Pitch, ViewRotation.Yaw),
+	ReportIssue(ViewedBot, EPTIssueType::PerfSpike, LookAt,
+		FString::Printf(TEXT("Frame time %.1f ms vs baseline %.1f ms; location = camera look-at point; camera at (%.0f, %.0f, %.0f) P=%.0f Y=%.0f"),
+			WindowMs, PerfBaselineMs, ViewLocation.X, ViewLocation.Y, ViewLocation.Z, ViewRotation.Pitch, ViewRotation.Yaw),
 		/*bAffectsBot*/ false);
 }
 

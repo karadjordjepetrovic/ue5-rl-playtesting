@@ -39,7 +39,13 @@ public:
 	float IdleChance = 0.05f;              // chance a segment is "stand still"
 
 	UPROPERTY(EditAnywhere, Category = "Random Walker")
-	float JumpChancePerSecond = 0.3f;
+	float JumpChancePerSecond = 0.5f;
+
+	UPROPERTY(EditAnywhere, Category = "Random Walker")
+	float BlockedJumpChancePerSecond = 4.f;  // extra jump chance while pushing into an obstacle (like a human tester)
+
+	UPROPERTY(EditAnywhere, Category = "Random Walker")
+	float BlockedSpeedThreshold = 250.f;     // cm/s along the input direction (~half walk speed); below this on the ground = blocked or sliding along an obstacle
 
 	UPROPERTY(EditAnywhere, Category = "Random Walker")
 	float MinJumpHold = 0.05f;             // s; varies jump height if the character supports held jumps

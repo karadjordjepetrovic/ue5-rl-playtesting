@@ -27,8 +27,15 @@ void APTRandomWalkerController::Tick(float DeltaSeconds)
 		BotCharacter->AddMovementInput(MoveDirection, 1.f);
 	}
 
-	// Jump: random presses with a random hold time.
+	// Blocked = pushing on the ground but barely moving along the input direction (walked into something).
+	const UCharacterMovementComponent* GroundMovement = BotCharacter->GetCharacterMovement();
+	const bool bOnGround = GroundMovement && GroundMovement->IsMovingOnGround();
+	const float SpeedAlongInput = FVector::DotProduct(BotCharacter->GetVelocity(), MoveDirection);
+	const bool bBlocked = bOnGround && !MoveDirection.IsNearlyZero() && SpeedAlongInput < BlockedSpeedThreshold;
+
+	// Jump: random presses with a random hold time, much more likely when blocked.
 	// Note: per-frame chances depend on frame rate; fine for Phase 1, replays will use a fixed timestep.
+	const float JumpChance = JumpChancePerSecond + (bBlocked ? BlockedJumpChancePerSecond : 0.f);
 	if (JumpTimeLeft > 0.f)
 	{
 		JumpTimeLeft -= DeltaSeconds;
@@ -37,7 +44,7 @@ void APTRandomWalkerController::Tick(float DeltaSeconds)
 			BotCharacter->StopJumping();
 		}
 	}
-	else if (Random.FRand() < JumpChancePerSecond * DeltaSeconds)
+	else if (Random.FRand() < JumpChance * DeltaSeconds)
 	{
 		BotCharacter->Jump();
 		JumpTimeLeft = Random.FRandRange(MinJumpHold, MaxJumpHold);

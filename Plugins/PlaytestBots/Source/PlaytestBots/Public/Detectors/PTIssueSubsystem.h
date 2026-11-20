@@ -41,6 +41,7 @@ public:
 	float StuckMinIntentFraction = 0.8f;  // share of the window the bot was trying to move
 	float StuckMaxDirectionConsistency = 0.5f; // 1 = always the same direction (just pushing into a wall), lower = tried different directions
 	float FallMarginBelowNav = 500.f;     // cm below the lowest navmesh floor = out of world
+	float MaxFallSeconds = 3.f;           // falling continuously this long = out of world (works without a navmesh)
 	float IssueCooldownSeconds = 10.f;    // per bot, avoids spamming the same issue
 	bool bRespawnAfterIssue = true;       // teleport the bot back to its spawn after an issue
 	float ClusterSize = 200.f;            // cm grid used to group issues in the report
@@ -123,6 +124,7 @@ private:
 	double PerfWindowTime = 0.0;
 	int32 PerfWindowFrames = 0;
 	float PerfBaselineMs = 0.f;
+	TArray<float> PerfRecentMs;   // last ~30 s of window averages, baseline = their median
 	float PerfCooldownUntil = 0.f;
 
 	// View cycling (pt.ViewBots)

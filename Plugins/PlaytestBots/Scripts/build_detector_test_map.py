@@ -252,3 +252,5 @@ nav_origin, nav_extent = nav.get_actor_bounds(False)
 unreal.log("PT_DetectorTest built: %d bugs, %d control areas." % (len(ground_truth["bugs"]), len(ground_truth["controls"])))
 unreal.log("Ground truth written to " + out_path)
 unreal.log("NavMeshBounds extent: %s (should be roughly 2300 x 2300 x 600; if tiny, scale it by hand)" % nav_extent)
+unreal.log_warning("NEXT: Build -> Build Paths, wait for the navmesh (press P to check), then save the map (Ctrl+S). "
+                    "Without a saved navmesh, coverage %% and reachability are unavailable after an editor restart.")
