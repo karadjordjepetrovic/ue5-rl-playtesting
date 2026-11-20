@@ -39,6 +39,10 @@ public:
 
 	bool IsTrainingMode() const { return bTrain; }
 
+	/** Seconds between decisions (observe + act). Actions are held and re-applied every frame in between. */
+	UPROPERTY(EditAnywhere, Category = "Playtest Learning")
+	float DecisionInterval = 0.1f;
+
 	// Training settings (step 1 keeps them simple; tuned in step 5)
 	UPROPERTY(EditAnywhere, Category = "Playtest Learning")
 	FLearningAgentsPPOTrainerSettings TrainerSettings;
@@ -77,4 +81,5 @@ private:
 	bool bTrain = false;
 	bool bReady = false;
 	bool bLoggedFailure = false;
+	float DecisionAccumulator = 0.f;
 };

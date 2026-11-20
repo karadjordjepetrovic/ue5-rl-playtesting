@@ -28,6 +28,11 @@ APTLearningActor::APTLearningActor()
 	// Starting the Python trainer imports PyTorch, which can take well over the default 10 s on Windows.
 	SharedMemorySettings.Timeout = 120.f;
 
+	// One PPO update per ~2k steps (default 10k): with 16 bots deciding 10x/s that is an update every ~13 s.
+	// Episodes of 512 decisions = ~51 s of play before a reset.
+	TrainerSettings.MaximumRecordedStepsPerIteration = 2048;
+	TrainerSettings.MaxEpisodeStepNum = 512;
+
 	// Step 1 smoke test: CPU training avoids CUDA setup issues. Switch to GPU in step 5.
 	TrainingSettings.Device = ELearningAgentsTrainingDevice::CPU;
 }
@@ -102,24 +107,38 @@ void APTLearningActor::Tick(float DeltaSeconds)
 		return;
 	}
 
-	if (bTrain && Trainer)
+	if (bTrain && Trainer && Trainer->HasTrainingFailed())
 	{
-		if (Trainer->HasTrainingFailed())
+		if (!bLoggedFailure)
 		{
-			if (!bLoggedFailure)
-			{
-				UE_LOG(LogPlaytestLearning, Error, TEXT("Training failed. Check the LogLearning lines above (Python / PyTorch setup)."));
-				bLoggedFailure = true;
-			}
-			return;
+			UE_LOG(LogPlaytestLearning, Error, TEXT("Training failed. Check the LogLearning lines above (Python / PyTorch setup)."));
+			bLoggedFailure = true;
 		}
-		// Gathers observations, runs the policy, performs actions, gathers rewards and sends experience to Python.
-		Trainer->RunTraining(TrainingSettings, GameSettings, /*bResetAgentsOnBegin*/ true, /*bResetAgentsOnUpdate*/ true);
+		return;
 	}
-	else if (Policy)
+
+	// Decide ~10 times a second (one decision = one training step), like the detectors' sampling rate.
+	DecisionAccumulator += DeltaSeconds;
+	if (DecisionAccumulator >= DecisionInterval)
 	{
-		// Inference only: no exploration noise.
-		Policy->RunInference(/*ActionNoiseScale*/ 0.f);
+		DecisionAccumulator = FMath::Fmod(DecisionAccumulator, DecisionInterval);
+
+		if (bTrain && Trainer)
+		{
+			// Gathers observations, runs the policy, performs actions, gathers rewards and sends experience to Python.
+			Trainer->RunTraining(TrainingSettings, GameSettings, /*bResetAgentsOnBegin*/ true, /*bResetAgentsOnUpdate*/ true);
+		}
+		else if (Policy)
+		{
+			// Inference only: no exploration noise.
+			Policy->RunInference(/*ActionNoiseScale*/ 0.f);
+		}
+	}
+
+	// Keep applying the last decision every frame.
+	if (UPTExplorerInteractor* Explorer = Cast<UPTExplorerInteractor>(Interactor))
+	{
+		Explorer->ApplyHeldActions();
 	}
 }
 
