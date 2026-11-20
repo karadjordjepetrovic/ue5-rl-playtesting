@@ -11,6 +11,7 @@
 #include "GameFramework/GameModeBase.h"
 #include "GameFramework/PlayerStart.h"
 #include "HAL/IConsoleManager.h"
+#include "Learning/PTLearningActor.h"
 #include "HAL/PlatformMisc.h"
 #include "Misc/CommandLine.h"
 #include "Misc/DateTime.h"
@@ -44,7 +45,7 @@ namespace PTConsole
 
 	static FAutoConsoleCommandWithWorldAndArgs StartCommand(
 		TEXT("pt.Start"),
-		TEXT("Start a playtest run: pt.Start [bots] [seconds] [Idle|Random|Frontier|Policy] [seed]"),
+		TEXT("Start a playtest run: pt.Start [bots] [seconds] [Idle|Random|Frontier|Policy] [seed] [train]"),
 		FConsoleCommandWithWorldAndArgsDelegate::CreateLambda([](const TArray<FString>& Args, UWorld* World)
 		{
 			UPTPlaytestSubsystem* Subsystem = GetSubsystem(World);
@@ -61,6 +62,7 @@ namespace PTConsole
 				UE_LOG(LogPlaytest, Warning, TEXT("Unknown walker '%s', using Random."), *Args[2]);
 			}
 			if (Args.Num() > 3) { LexFromString(RunConfig.Seed, *Args[3]); }
+			if (Args.Num() > 4) { RunConfig.bTrain = Args[4].Equals(TEXT("train"), ESearchCase::IgnoreCase); }
 
 			Subsystem->StartRun(RunConfig);
 		}));
@@ -95,8 +97,8 @@ namespace PTConsole
 // ---------------------------------------------------------------------------
 FString FPTRunConfig::ToString() const
 {
-	return FString::Printf(TEXT("bots=%d duration=%.0fs seed=%d walker=%s pawn=%s quitOnEnd=%d"),
-		NumBots, DurationSeconds, Seed, *UPTPlaytestSubsystem::WalkerToString(Walker),
+	return FString::Printf(TEXT("bots=%d duration=%.0fs seed=%d walker=%s train=%d pawn=%s quitOnEnd=%d"),
+		NumBots, DurationSeconds, Seed, *UPTPlaytestSubsystem::WalkerToString(Walker), bTrain,
 		PawnClassPath.IsEmpty() ? TEXT("<GameMode default>") : *PawnClassPath, bQuitOnEnd);
 }
 
@@ -140,6 +142,7 @@ bool UPTPlaytestSubsystem::ParseCommandLine(FPTRunConfig& OutConfig)
 	FParse::Value(Cmd, TEXT("PTDuration="), OutConfig.DurationSeconds);
 	FParse::Value(Cmd, TEXT("PTSeed="), OutConfig.Seed);
 	FParse::Value(Cmd, TEXT("PTPawn="), OutConfig.PawnClassPath);
+	OutConfig.bTrain = FParse::Param(Cmd, TEXT("PTTrain"));
 
 	FString WalkerText;
 	if (FParse::Value(Cmd, TEXT("PTWalker="), WalkerText) && !ParseWalker(WalkerText, OutConfig.Walker))
@@ -181,6 +184,11 @@ void UPTPlaytestSubsystem::StartRun(const FPTRunConfig& InConfig)
 
 	SpawnBots();
 
+	if (Config.Walker == EPTWalkerType::Policy)
+	{
+		SpawnLearningActor();
+	}
+
 	World->GetTimerManager().SetTimer(EndTimerHandle, this, &UPTPlaytestSubsystem::EndRun, Config.DurationSeconds, false);
 
 	OnRunStarted.Broadcast(Config);
@@ -206,6 +214,7 @@ void UPTPlaytestSubsystem::EndRun()
 	OnRunFinished.Broadcast(Config);
 
 	bRunning = false;
+	DestroyLearningActor(); // ends training (Python process) before the agents disappear
 	DestroyBots();
 
 	if (Config.bQuitOnEnd && !GIsEditor)
@@ -379,4 +388,44 @@ void UPTPlaytestSubsystem::DestroyBots()
 		}
 	}
 	Bots.Reset();
+}
+
+void UPTPlaytestSubsystem::SpawnLearningActor()
+{
+	UWorld* World = GetWorld();
+	if (!World)
+	{
+		return;
+	}
+
+	TArray<APawn*> LiveBots;
+	for (const TWeakObjectPtr<APawn>& BotPtr : Bots)
+	{
+		if (APawn* Bot = BotPtr.Get())
+		{
+			LiveBots.Add(Bot);
+		}
+	}
+
+	FActorSpawnParameters Params;
+	Params.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+	LearningActor = World->SpawnActor<APTLearningActor>(APTLearningActor::StaticClass(), FTransform::Identity, Params);
+	if (LearningActor)
+	{
+		LearningActor->Setup(LiveBots, Config.bTrain, Config.Seed);
+	}
+	else
+	{
+		UE_LOG(LogPlaytest, Error, TEXT("Could not spawn the learning actor."));
+	}
+}
+
+void UPTPlaytestSubsystem::DestroyLearningActor()
+{
+	if (LearningActor)
+	{
+		LearningActor->Shutdown();
+		LearningActor->Destroy();
+		LearningActor = nullptr;
+	}
 }

@@ -11,6 +11,7 @@
 
 class AController;
 class APawn;
+class APTLearningActor;
 
 /** Which brain drives the bots. Random/Frontier controllers arrive later in step 5. */
 UENUM(BlueprintType)
@@ -44,6 +45,10 @@ struct PLAYTESTBOTS_API FPTRunConfig
 	 *  Empty = use the GameMode's DefaultPawnClass. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Playtest")
 	FString PawnClassPath;
+
+	/** Policy walker only: train the policy (PPO) during the run instead of just running it. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Playtest")
+	bool bTrain = false;
 
 	/** Quit the process when the run ends (always true for standalone/headless runs). */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Playtest")
@@ -113,4 +118,11 @@ private:
 	FTimerHandle EndTimerHandle;
 
 	TArray<TWeakObjectPtr<APawn>> Bots;
+
+	/** Learning Agents owner, only for the Policy walker. */
+	UPROPERTY()
+	TObjectPtr<APTLearningActor> LearningActor;
+
+	void SpawnLearningActor();
+	void DestroyLearningActor();
 };

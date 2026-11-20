@@ -28,7 +28,11 @@ public class PlaytestBots : ModuleRules
             "CoreUObject",
             "Engine",
             "AIModule",          // AAIController, MoveTo (walkers)
-            "NavigationSystem"   // navmesh queries (frontier walker, coverage denominator)
+            "NavigationSystem",  // navmesh queries (frontier walker, coverage denominator)
+            "LearningAgents",         // interactor, policy, critic, manager (Phase 2)
+            "LearningAgentsTraining", // training environment, PPO trainer, communicator (Phase 2)
+            "Learning",               // LearningCore runtime (needed by Learning Agents public headers)
+            "LearningTraining"        // LearningCore training (LearningAgentsTrainer.h includes LearningTrainer.h)
         });
 
         PrivateDependencyModuleNames.AddRange(new string[]
