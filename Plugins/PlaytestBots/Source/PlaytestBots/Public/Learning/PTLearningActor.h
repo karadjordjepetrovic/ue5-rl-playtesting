@@ -1,6 +1,7 @@
 // PTLearningActor.h
 // Owns the Learning Agents objects for one run: manager, interactor, policy and (when training)
 // critic, training environment, PPO trainer and the Python training process.
+// Also saves/loads the trained networks to Saved/PlaytestModels/<ModelName>/.
 // Spawned by UPTPlaytestSubsystem when the walker is "Policy".
 // Location: Plugins/PlaytestBots/Source/PlaytestBots/Public/Learning/PTLearningActor.h
 
@@ -17,8 +18,20 @@ class APawn;
 class ULearningAgentsCritic;
 class ULearningAgentsInteractor;
 class ULearningAgentsManager;
+class ULearningAgentsNeuralNetwork;
 class ULearningAgentsPolicy;
 class ULearningAgentsTrainingEnvironment;
+
+/** How a Policy run should behave (filled from FPTRunConfig). */
+struct FPTLearningOptions
+{
+	bool bTrain = false;
+	int32 Seed = 1;
+	FString ModelName = TEXT("explorer");
+	bool bFresh = false;    // training: ignore an existing model and start from scratch
+	bool bUseGpu = true;    // training device
+	float InferenceNoise = 1.f; // 1 = sample from the learned action distribution (varied explorers), 0 = always the most likely action
+};
 
 UCLASS()
 class PLAYTESTBOTS_API APTLearningActor : public AActor
@@ -28,22 +41,30 @@ class PLAYTESTBOTS_API APTLearningActor : public AActor
 public:
 	APTLearningActor();
 
-	/** Creates all Learning Agents objects and registers the bots as agents. */
-	void Setup(const TArray<APawn*>& InBots, bool bInTrain, int32 InSeed);
+	/** Creates all Learning Agents objects, loads a saved model if there is one, and registers the bots as agents. */
+	void Setup(const TArray<APawn*>& InBots, const FPTLearningOptions& InOptions);
 
-	/** Stops training cleanly (ends the Python process). Safe to call more than once. */
+	/** Saves the model (training runs) and stops training cleanly. Safe to call more than once. */
 	void Shutdown();
 
 	virtual void Tick(float DeltaSeconds) override;
 	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 
-	bool IsTrainingMode() const { return bTrain; }
+	bool IsTrainingMode() const { return Options.bTrain; }
 
 	/** Seconds between decisions (observe + act). Actions are held and re-applied every frame in between. */
 	UPROPERTY(EditAnywhere, Category = "Playtest Learning")
 	float DecisionInterval = 0.1f;
 
-	// Training settings (step 1 keeps them simple; tuned in step 5)
+	/** Decisions per episode (512 x 0.1 s = ~51 s of play before a reset). The batch is bots x EpisodeSteps. */
+	UPROPERTY(EditAnywhere, Category = "Playtest Learning")
+	int32 EpisodeSteps = 512;
+
+	/** Training runs also save the model every this many seconds, so a crash doesn't lose hours of training. */
+	UPROPERTY(EditAnywhere, Category = "Playtest Learning")
+	float SaveIntervalSeconds = 300.f;
+	float CheckpointIntervalSeconds = 1800.f; // also keep a copy in checkpoints/<RunId>_<minutes>min every 30 min
+
 	UPROPERTY(EditAnywhere, Category = "Playtest Learning")
 	FLearningAgentsPPOTrainerSettings TrainerSettings;
 
@@ -60,6 +81,11 @@ public:
 	FLearningAgentsSharedMemoryCommunicatorSettings SharedMemorySettings;
 
 private:
+	FString GetModelDir() const;
+	FString GetSchemaSignature() const;
+	bool LoadModel(bool bIncludeCritic);
+	void SaveModel();
+
 	UPROPERTY(VisibleAnywhere, Category = "Playtest Learning")
 	TObjectPtr<ULearningAgentsManager> Manager;
 
@@ -78,8 +104,17 @@ private:
 	UPROPERTY()
 	TObjectPtr<ULearningAgentsPPOTrainer> Trainer;
 
-	bool bTrain = false;
+	FPTLearningOptions Options;
 	bool bReady = false;
 	bool bLoggedFailure = false;
+	bool bSaved = false;
 	float DecisionAccumulator = 0.f;
+	float SaveAccumulator = 0.f;
+	float CheckpointAccumulator = 0.f;
+	float TrainingSeconds = 0.f;
+
+	void SaveCheckpoint();
+
+	/** Copies the model files currently on disk into checkpoints/<RunId>_<Label>. */
+	void CopyModelToCheckpoint(const FString& Label) const;
 };

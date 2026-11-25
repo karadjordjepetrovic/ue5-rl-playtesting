@@ -50,6 +50,22 @@ struct PLAYTESTBOTS_API FPTRunConfig
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Playtest")
 	bool bTrain = false;
 
+	/** Policy walker: model name, stored in Saved/PlaytestModels/<ModelName>/. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Playtest")
+	FString ModelName = TEXT("explorer");
+
+	/** Training: ignore an existing saved model and start from scratch. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Playtest")
+	bool bFreshModel = false;
+
+	/** Policy inference: action noise (1 = sample the learned distribution, 0 = deterministic). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Playtest")
+	float InferenceNoise = 1.f;
+
+	/** Training: use the CPU instead of the GPU (slower; for machines without CUDA). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Playtest")
+	bool bTrainOnCpu = false;
+
 	/** Quit the process when the run ends (always true for standalone/headless runs). */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Playtest")
 	bool bQuitOnEnd = false;

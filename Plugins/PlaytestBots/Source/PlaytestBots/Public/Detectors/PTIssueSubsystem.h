@@ -31,6 +31,10 @@ public:
 	void ReportIssue(int32 BotIndex, EPTIssueType Type, const FVector& Location, const FString& Detail, bool bAffectsBot = true);
 
 	const TArray<FPTIssueRecord>& GetIssues() const { return Issues; }
+
+	/** Call after something else teleports a bot (e.g. the training environment), so detectors don't compare
+	 *  positions across the jump (that would look like a fall or a clip through walls). */
+	void NotifyBotTeleported(const APawn* Bot);
 	static FString IssueTypeToString(EPTIssueType Type);
 
 	// Settings (starting values, tune later)
@@ -99,6 +103,10 @@ private:
 	void GetHistory(const FBotState& State, TArray<FPTActionSample>& OutHistory) const;
 
 	bool CheckOutOfWorld(int32 BotIndex, const FPTActionSample& Now);
+
+	/** Where the bot actually went over the edge: the newest recorded sample still at (or above) the height of its
+	 *  last floor. Hopping bots are almost never sampled on the ground, so LastGroundedLocation can be metres away. */
+	FVector FindFallStart(const FBotState& State) const;
 	bool CheckStuck(int32 BotIndex, const FPTActionSample& Now);
 	bool CheckClip(int32 BotIndex, const FPTActionSample& Prev, const FPTActionSample& Now);
 	bool CheckForbidden(int32 BotIndex, const FPTActionSample& Now);

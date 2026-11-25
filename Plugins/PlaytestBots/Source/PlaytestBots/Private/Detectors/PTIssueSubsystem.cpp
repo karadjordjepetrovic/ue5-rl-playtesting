@@ -339,6 +339,20 @@ void UPTIssueSubsystem::GetHistory(const FBotState& State, TArray<FPTActionSampl
 // ---------------------------------------------------------------------------
 // Detectors
 // ---------------------------------------------------------------------------
+FVector UPTIssueSubsystem::FindFallStart(const FBotState& State) const
+{
+	const float FloorZ = State.LastGroundedLocation.Z;
+	for (int32 Ago = 0; Ago < State.HistoryCount; ++Ago)
+	{
+		const FPTActionSample* Sample = GetSampleAgo(State, Ago);
+		if (Sample && Sample->Location.Z >= FloorZ - 50.f)
+		{
+			return FVector(Sample->Location.X, Sample->Location.Y, FloorZ);
+		}
+	}
+	return State.LastGroundedLocation;
+}
+
 bool UPTIssueSubsystem::CheckOutOfWorld(int32 BotIndex, const FPTActionSample& Now)
 {
 	// Lowest navmesh floor, computed once the coverage grid has its reachable cells.
@@ -359,7 +373,7 @@ bool UPTIssueSubsystem::CheckOutOfWorld(int32 BotIndex, const FPTActionSample& N
 
 	if (bHasNavFloor && Now.Location.Z < LowestNavZ - FallMarginBelowNav)
 	{
-		const FVector FallStart = BotStates[BotIndex].LastGroundedLocation;
+		const FVector FallStart = FindFallStart(BotStates[BotIndex]);
 		ReportIssue(BotIndex, EPTIssueType::OutOfWorld, FallStart,
 			FString::Printf(TEXT("Fell %.0f cm below the lowest navmesh floor; location = where the fall started"),
 				LowestNavZ - Now.Location.Z));
@@ -380,7 +394,7 @@ bool UPTIssueSubsystem::CheckOutOfWorld(int32 BotIndex, const FPTActionSample& N
 		}
 		if (bFallingWholeTime)
 		{
-			ReportIssue(BotIndex, EPTIssueType::OutOfWorld, BotStates[BotIndex].LastGroundedLocation,
+			ReportIssue(BotIndex, EPTIssueType::OutOfWorld, FindFallStart(BotStates[BotIndex]),
 				FString::Printf(TEXT("Falling for over %.0f s and %.0f cm below the last floor; location = where the fall started"),
 					MaxFallSeconds, BotStates[BotIndex].LastGroundedLocation.Z - Now.Location.Z));
 			return true;
@@ -390,7 +404,7 @@ bool UPTIssueSubsystem::CheckOutOfWorld(int32 BotIndex, const FPTActionSample& N
 	const AWorldSettings* Settings = GetWorld() ? GetWorld()->GetWorldSettings() : nullptr;
 	if (Settings && Settings->bEnableWorldBoundsChecks && Now.Location.Z < Settings->KillZ + 200.f)
 	{
-		ReportIssue(BotIndex, EPTIssueType::OutOfWorld, BotStates[BotIndex].LastGroundedLocation,
+		ReportIssue(BotIndex, EPTIssueType::OutOfWorld, FindFallStart(BotStates[BotIndex]),
 			TEXT("Near KillZ; location = where the fall started"));
 		return true;
 	}
@@ -416,7 +430,8 @@ bool UPTIssueSubsystem::CheckStuck(int32 BotIndex, const FPTActionSample& Now)
 	{
 		if (const FPTActionSample* Sample = GetSampleAgo(State, Ago))
 		{
-			Displacement = FMath::Max(Displacement, FVector::Dist(Now.Location, Sample->Location));
+			// Horizontal only: a trapped bot that keeps jumping moves up and down but goes nowhere.
+			Displacement = FMath::Max(Displacement, FVector::Dist2D(Now.Location, Sample->Location));
 		}
 	}
 	if (Displacement > StuckMaxDisplacement)
@@ -601,7 +616,8 @@ bool UPTIssueSubsystem::CheckForbidden(int32 BotIndex, const FPTActionSample& No
 	for (const FForbiddenZone& Zone : ForbiddenZones)
 	{
 		const FVector Local = Zone.Transform.InverseTransformPosition(Now.Location);
-		if (FMath::Abs(Local.X) <= Zone.Extent.X && FMath::Abs(Local.Y) <= Zone.Extent.Y && FMath::Abs(Local.Z) <= Zone.Extent.Z)
+		// The volume marks a forbidden footprint: anything above its bottom counts (bots standing, jumping or perched higher up).
+		if (FMath::Abs(Local.X) <= Zone.Extent.X && FMath::Abs(Local.Y) <= Zone.Extent.Y && Local.Z >= -Zone.Extent.Z)
 		{
 			ReportIssue(BotIndex, EPTIssueType::ForbiddenArea, Now.Location,
 				FString::Printf(TEXT("Entered forbidden volume: %s"), *Zone.Name));
@@ -649,6 +665,13 @@ void UPTIssueSubsystem::TickPerf()
 	if (!FApp::CanEverRender())
 	{
 		return; // headless (-nullrhi) runs have no meaningful frame time
+	}
+	if (const UPTPlaytestSubsystem* TrainingRun = RunSubsystem.Get())
+	{
+		if (TrainingRun->GetConfig().bTrain)
+		{
+			return; // training updates stall the game on purpose; those are not level perf problems
+		}
 	}
 
 	PerfWindowTime += FApp::GetDeltaTime();
@@ -789,9 +812,26 @@ void UPTIssueSubsystem::ReportIssue(int32 BotIndex, EPTIssueType Type, const FVe
 
 	State.CooldownUntil = Issue.Time + IssueCooldownSeconds;
 
-	if (bRespawnAfterIssue)
+	// In training the learning environment ends the episode and restarts the bot instead.
+	const bool bTraining = Run && Run->GetConfig().bTrain;
+	if (bRespawnAfterIssue && !bTraining)
 	{
 		RespawnBot(State);
+	}
+}
+
+void UPTIssueSubsystem::NotifyBotTeleported(const APawn* Bot)
+{
+	for (FBotState& State : BotStates)
+	{
+		if (State.Pawn.Get() == Bot)
+		{
+			State.HistoryCount = 0;
+			State.HistoryHead = 0;
+			State.LastGroundedLocation = Bot->GetActorLocation();
+			State.LastKnownLocation = Bot->GetActorLocation();
+			return;
+		}
 	}
 }
 
@@ -850,6 +890,10 @@ void UPTIssueSubsystem::WriteReport() const
 		int32 FirstIssueIndex = INDEX_NONE;
 	};
 	TMap<FString, FCluster> Clusters;
+	// Full records (with 10 s of action history each) only for the first few issues of every cluster:
+	// a long training run produces tens of thousands of repeats, which made report.json exceed 2 GB.
+	constexpr int32 MaxRecordsPerCluster = 5;
+	TArray<int32> KeptIssueIndices;
 	for (int32 IssueIndex = 0; IssueIndex < Issues.Num(); ++IssueIndex)
 	{
 		const FPTIssueRecord& Issue = Issues[IssueIndex];
@@ -866,6 +910,10 @@ void UPTIssueSubsystem::WriteReport() const
 			Cluster.FirstIssueIndex = IssueIndex;
 		}
 		++Cluster.Count;
+		if (Cluster.Count <= MaxRecordsPerCluster)
+		{
+			KeptIssueIndices.Add(IssueIndex);
+		}
 		Cluster.Bots.Add(Issue.BotIndex);
 		Cluster.LocationSum += Issue.Location;
 	}
@@ -892,15 +940,17 @@ void UPTIssueSubsystem::WriteReport() const
 	Root->SetNumberField(TEXT("clusterCount"), SortedClusters.Num());
 	Root->SetArrayField(TEXT("clusters"), ClustersJson);
 
-	// Full records (with action history) for replay later.
+	// Full records (with action history) for replay later, capped per cluster.
 	TArray<TSharedPtr<FJsonValue>> IssuesJson;
-	for (const FPTIssueRecord& Issue : Issues)
+	for (const int32 IssueIndex : KeptIssueIndices)
 	{
-		if (TSharedPtr<FJsonObject> IssueObject = FJsonObjectConverter::UStructToJsonObject(Issue))
+		if (TSharedPtr<FJsonObject> IssueObject = FJsonObjectConverter::UStructToJsonObject(Issues[IssueIndex]))
 		{
+			IssueObject->SetNumberField(TEXT("issueIndex"), IssueIndex);
 			IssuesJson.Add(MakeShared<FJsonValueObject>(IssueObject));
 		}
 	}
+	Root->SetNumberField(TEXT("recordsWritten"), IssuesJson.Num());
 	Root->SetArrayField(TEXT("issues"), IssuesJson);
 
 	FString Output;

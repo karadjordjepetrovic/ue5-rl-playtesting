@@ -97,8 +97,8 @@ namespace PTConsole
 // ---------------------------------------------------------------------------
 FString FPTRunConfig::ToString() const
 {
-	return FString::Printf(TEXT("bots=%d duration=%.0fs seed=%d walker=%s train=%d pawn=%s quitOnEnd=%d"),
-		NumBots, DurationSeconds, Seed, *UPTPlaytestSubsystem::WalkerToString(Walker), bTrain,
+	return FString::Printf(TEXT("bots=%d duration=%.0fs seed=%d walker=%s train=%d model=%s pawn=%s quitOnEnd=%d"),
+		NumBots, DurationSeconds, Seed, *UPTPlaytestSubsystem::WalkerToString(Walker), bTrain, *ModelName,
 		PawnClassPath.IsEmpty() ? TEXT("<GameMode default>") : *PawnClassPath, bQuitOnEnd);
 }
 
@@ -143,6 +143,10 @@ bool UPTPlaytestSubsystem::ParseCommandLine(FPTRunConfig& OutConfig)
 	FParse::Value(Cmd, TEXT("PTSeed="), OutConfig.Seed);
 	FParse::Value(Cmd, TEXT("PTPawn="), OutConfig.PawnClassPath);
 	OutConfig.bTrain = FParse::Param(Cmd, TEXT("PTTrain"));
+	FParse::Value(Cmd, TEXT("PTModel="), OutConfig.ModelName);
+	OutConfig.bFreshModel = FParse::Param(Cmd, TEXT("PTFresh"));
+	OutConfig.bTrainOnCpu = FParse::Param(Cmd, TEXT("PTCpu"));
+	FParse::Value(Cmd, TEXT("PTNoise="), OutConfig.InferenceNoise);
 
 	FString WalkerText;
 	if (FParse::Value(Cmd, TEXT("PTWalker="), WalkerText) && !ParseWalker(WalkerText, OutConfig.Walker))
@@ -210,11 +214,13 @@ void UPTPlaytestSubsystem::EndRun()
 	UE_LOG(LogPlaytest, Display, TEXT("Run %s finished after %.1fs with %d bots. Output dir: %s"),
 		*RunId, GetElapsedSeconds(), Bots.Num(), *GetRunOutputDir());
 
+	// Save the model and end training first, so a failure while writing reports can't lose it.
+	DestroyLearningActor();
+
 	// Listeners (reporter, coverage grid) read the bots and run state before teardown.
 	OnRunFinished.Broadcast(Config);
 
 	bRunning = false;
-	DestroyLearningActor(); // ends training (Python process) before the agents disappear
 	DestroyBots();
 
 	if (Config.bQuitOnEnd && !GIsEditor)
@@ -412,7 +418,14 @@ void UPTPlaytestSubsystem::SpawnLearningActor()
 	LearningActor = World->SpawnActor<APTLearningActor>(APTLearningActor::StaticClass(), FTransform::Identity, Params);
 	if (LearningActor)
 	{
-		LearningActor->Setup(LiveBots, Config.bTrain, Config.Seed);
+		FPTLearningOptions Options;
+		Options.bTrain = Config.bTrain;
+		Options.Seed = Config.Seed;
+		Options.ModelName = Config.ModelName;
+		Options.bFresh = Config.bFreshModel;
+		Options.bUseGpu = !Config.bTrainOnCpu;
+		Options.InferenceNoise = Config.InferenceNoise;
+		LearningActor->Setup(LiveBots, Options);
 	}
 	else
 	{

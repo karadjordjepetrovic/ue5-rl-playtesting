@@ -10,6 +10,7 @@
 #include "GameFramework/CharacterMovementComponent.h"
 #include "LearningAgentsActions.h"
 #include "LearningAgentsObservations.h"
+#include "PTPlaytestSubsystem.h"
 
 namespace PTExplorer
 {
@@ -46,6 +47,15 @@ void UPTExplorerInteractor::SpecifyAgentObservation_Implementation(
 	Elements.Add(TEXT("FrontierDirection"), ULearningAgentsObservations::SpecifyDirectionObservation(InObservationSchema));
 	Elements.Add(TEXT("FrontierDistance"), ULearningAgentsObservations::SpecifyFloatObservation(InObservationSchema));
 
+	// Nearest other bot (direction in the bot's frame, distance 0..1; 1 = nobody within range), so bots can spread out.
+	Elements.Add(TEXT("NearestBotDirection"), ULearningAgentsObservations::SpecifyDirectionObservation(InObservationSchema));
+	Elements.Add(TEXT("NearestBotDistance"), ULearningAgentsObservations::SpecifyFloatObservation(InObservationSchema));
+
+	// Per direction (forward, right, back, left): [ledge low enough to jump onto, gap narrow enough to jump across], 0 or 1.
+	// Lets the policy learn to jump only when there is something to jump on (jumping costs a little reward).
+	Elements.Add(TEXT("Jumpable"), ULearningAgentsObservations::SpecifyContinuousObservation(
+		InObservationSchema, JumpProbeCount * 2, PTExplorer::UnitNormalization(JumpProbeCount * 2)));
+
 	// Own movement state.
 	Elements.Add(TEXT("Velocity"), ULearningAgentsObservations::SpecifyVelocityObservation(InObservationSchema));
 	Elements.Add(TEXT("Grounded"), ULearningAgentsObservations::SpecifyBoolObservation(InObservationSchema));
@@ -65,6 +75,10 @@ void UPTExplorerInteractor::GatherAgentObservation_Implementation(
 	Patch.Init(-1.f, PatchValueCount());
 	FVector FrontierDirection = FVector::ZeroVector;
 	float FrontierDistance = 1.f;
+	TArray<float> Jumpable;
+	Jumpable.Init(0.f, JumpProbeCount * 2);
+	FVector NearestBotDirection = FVector::ZeroVector;
+	float NearestBotDistance = 1.f;
 	FVector Velocity = FVector::ZeroVector;
 	FTransform Frame = FTransform::Identity;
 	bool bGrounded = false;
@@ -107,6 +121,37 @@ void UPTExplorerInteractor::GatherAgentObservation_Implementation(
 			}
 		}
 
+		// --- Jump probes: a step/ledge we could land on, or a gap we could clear ---
+		for (int32 Probe = 0; Probe < JumpProbeCount; ++Probe)
+		{
+			const FVector Dir = YawOnly.RotateVector(FRotator(0.f, 360.f * Probe / JumpProbeCount, 0.f).Vector());
+			bool bLedge = false, bGap = false;
+			ProbeJump(BotCharacter, Dir, JumpProbeDistance, bLedge, bGap);
+			Jumpable[Probe * 2] = bLedge ? 1.f : 0.f;
+			Jumpable[Probe * 2 + 1] = bGap ? 1.f : 0.f;
+		}
+
+		// --- Nearest other bot ---
+		if (const UPTPlaytestSubsystem* Run = World->GetSubsystem<UPTPlaytestSubsystem>())
+		{
+			float BestDistance = NeighbourRange;
+			for (const TWeakObjectPtr<APawn>& Other : Run->GetBots())
+			{
+				if (!Other.IsValid() || Other.Get() == BotCharacter)
+				{
+					continue;
+				}
+				const FVector ToOther = Other->GetActorLocation() - Origin;
+				const float Distance = ToOther.Size2D();
+				if (Distance < BestDistance && FMath::Abs(ToOther.Z) < 300.f)
+				{
+					BestDistance = Distance;
+					NearestBotDirection = ToOther.GetSafeNormal2D();
+					NearestBotDistance = Distance / NeighbourRange;
+				}
+			}
+		}
+
 		const UPTCoverageSubsystem* Coverage = World->GetSubsystem<UPTCoverageSubsystem>();
 		if (Coverage)
 		{
@@ -129,11 +174,23 @@ void UPTExplorerInteractor::GatherAgentObservation_Implementation(
 				}
 			}
 
-			// --- Least-visited reachable cell nearby (ties broken by distance) ---
+			// --- Least-visited reachable cell nearby, avoiding cells other bots are already heading for ---
+			// Score = visits (+ ClaimPenalty if another bot claimed a cell within ClaimRadius) + a small distance term.
+			// Without the claim penalty, bots next to each other get the same target and walk in a row.
 			const FIntVector Center = Coverage->LocationToCell(Feet);
-			int32 BestVisits = TNumericLimits<int32>::Max();
-			float BestDistanceSq = TNumericLimits<float>::Max();
-			FVector BestLocation = FVector::ZeroVector;
+			TArray<FIntVector> OtherClaims;
+			for (const TPair<int32, FIntVector>& Claim : FrontierClaims)
+			{
+				if (Claim.Key != AgentId)
+				{
+					OtherClaims.Add(Claim.Value);
+				}
+			}
+			const int32 ClaimRadiusSq = ClaimRadius * ClaimRadius;
+			const float MaxDistanceSq = 2.f * FrontierRadius * FrontierRadius;
+
+			float BestScore = TNumericLimits<float>::Max();
+			FIntVector BestCell = FIntVector::ZeroValue;
 			bool bFound = false;
 			for (int32 Dz = -1; Dz <= 1; ++Dz)
 			{
@@ -150,17 +207,34 @@ void UPTExplorerInteractor::GatherAgentObservation_Implementation(
 						{
 							continue;
 						}
-						const int32 Visits = Coverage->GetVisitCount(CellId);
-						const float DistanceSq = static_cast<float>(Dx * Dx + Dy * Dy);
-						if (Visits < BestVisits || (Visits == BestVisits && DistanceSq < BestDistanceSq))
+						float Score = static_cast<float>(Coverage->GetVisitCount(CellId))
+							+ 0.5f * static_cast<float>(Dx * Dx + Dy * Dy) / MaxDistanceSq; // < 1 visit: only breaks ties
+						for (const FIntVector& Claimed : OtherClaims)
 						{
-							BestVisits = Visits;
-							BestDistanceSq = DistanceSq;
-							BestLocation = Coverage->CellToLocation(CellId);
+							const FIntVector D = Claimed - CellId;
+							if (D.X * D.X + D.Y * D.Y <= ClaimRadiusSq && FMath::Abs(D.Z) <= 1)
+							{
+								Score += ClaimPenalty;
+								break;
+							}
+						}
+						if (Score < BestScore)
+						{
+							BestScore = Score;
+							BestCell = CellId;
 							bFound = true;
 						}
 					}
 				}
+			}
+			const FVector BestLocation = bFound ? Coverage->CellToLocation(BestCell) : FVector::ZeroVector;
+			if (bFound)
+			{
+				FrontierClaims.FindOrAdd(AgentId) = BestCell;
+			}
+			else
+			{
+				FrontierClaims.Remove(AgentId);
 			}
 			if (bFound)
 			{
@@ -176,11 +250,52 @@ void UPTExplorerInteractor::GatherAgentObservation_Implementation(
 	Elements.Add(TEXT("Coverage"), ULearningAgentsObservations::MakeContinuousObservation(InObservationObject, Patch));
 	Elements.Add(TEXT("FrontierDirection"), ULearningAgentsObservations::MakeDirectionObservation(InObservationObject, FrontierDirection, Frame));
 	Elements.Add(TEXT("FrontierDistance"), ULearningAgentsObservations::MakeFloatObservation(InObservationObject, FrontierDistance));
+	Elements.Add(TEXT("NearestBotDirection"), ULearningAgentsObservations::MakeDirectionObservation(InObservationObject, NearestBotDirection, Frame));
+	Elements.Add(TEXT("NearestBotDistance"), ULearningAgentsObservations::MakeFloatObservation(InObservationObject, NearestBotDistance));
+	Elements.Add(TEXT("Jumpable"), ULearningAgentsObservations::MakeContinuousObservation(InObservationObject, Jumpable));
 	Elements.Add(TEXT("Velocity"), ULearningAgentsObservations::MakeVelocityObservation(InObservationObject, Velocity, Frame));
 	Elements.Add(TEXT("Grounded"), ULearningAgentsObservations::MakeBoolObservation(InObservationObject, bGrounded));
 	Elements.Add(TEXT("Crouched"), ULearningAgentsObservations::MakeBoolObservation(InObservationObject, bCrouched));
 
 	OutObservationObjectElement = ULearningAgentsObservations::MakeStructObservation(InObservationObject, Elements);
+}
+
+void UPTExplorerInteractor::ProbeJump(const ACharacter* Bot, const FVector& Dir, float Distance, bool& bOutLedge, bool& bOutGap)
+{
+	bOutLedge = false;
+	bOutGap = false;
+	UWorld* World = Bot ? Bot->GetWorld() : nullptr;
+	if (!World)
+	{
+		return;
+	}
+
+	const UCharacterMovementComponent* Move = Bot->GetCharacterMovement();
+	const float Gravity = Move ? FMath::Max(1.f, FMath::Abs(Move->GetGravityZ())) : 980.f;
+	const float JumpZ = Move ? Move->JumpZVelocity : 420.f;
+	const float MaxJumpHeight = JumpZ * JumpZ / (2.f * Gravity); // ~90 cm with default settings
+	const float MaxStep = Move ? Move->MaxStepHeight : 45.f;     // anything lower is walked over
+	const FVector FeetPoint = Bot->GetActorLocation() - FVector(0.f, 0.f, Bot->GetSimpleCollisionHalfHeight());
+
+	FCollisionQueryParams TraceParams(SCENE_QUERY_STAT(PTJumpProbe), /*bTraceComplex*/ false, Bot);
+	const FCollisionObjectQueryParams StaticObjects(ECC_WorldStatic);
+	FHitResult Hit;
+
+	// Ledge: blocked just above step height, but clear just above jump height.
+	const FVector Low = FeetPoint + FVector(0.f, 0.f, MaxStep + 10.f);
+	const FVector High = FeetPoint + FVector(0.f, 0.f, MaxJumpHeight - 5.f);
+	if (World->LineTraceSingleByObjectType(Hit, Low, Low + Dir * Distance, StaticObjects, TraceParams))
+	{
+		FHitResult HighHit;
+		bOutLedge = !World->LineTraceSingleByObjectType(HighHit, High, High + Dir * (Hit.Distance + 60.f), StaticObjects, TraceParams);
+	}
+
+	// Gap: no floor just ahead, but floor again within jumping distance.
+	const FVector Near = FeetPoint + Dir * 120.f + FVector(0.f, 0.f, 20.f);
+	const FVector Far = FeetPoint + Dir * 300.f + FVector(0.f, 0.f, 20.f);
+	const bool bNearFloor = World->LineTraceSingleByObjectType(Hit, Near, Near - FVector(0.f, 0.f, 150.f), StaticObjects, TraceParams);
+	const bool bFarFloor = World->LineTraceSingleByObjectType(Hit, Far, Far - FVector(0.f, 0.f, 150.f), StaticObjects, TraceParams);
+	bOutGap = !bNearFloor && bFarFloor;
 }
 
 // ---------------------------------------------------------------------------
