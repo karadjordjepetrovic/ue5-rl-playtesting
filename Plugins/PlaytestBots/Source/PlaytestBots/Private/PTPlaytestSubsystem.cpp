@@ -11,6 +11,7 @@
 #include "GameFramework/GameModeBase.h"
 #include "GameFramework/PlayerStart.h"
 #include "HAL/IConsoleManager.h"
+#include "Gym/PTGymLayout.h"
 #include "Learning/PTLearningActor.h"
 #include "HAL/PlatformMisc.h"
 #include "Misc/CommandLine.h"
@@ -213,6 +214,9 @@ void UPTPlaytestSubsystem::EndRun()
 
 	UE_LOG(LogPlaytest, Display, TEXT("Run %s finished after %.1fs with %d bots. Output dir: %s"),
 		*RunId, GetElapsedSeconds(), Bots.Num(), *GetRunOutputDir());
+
+	// Procedural gyms: their planted bugs are the answer key for this run.
+	APTGymLayout::WriteWorldGroundTruth(World, FPaths::Combine(GetRunOutputDir(), TEXT("ground_truth.json")));
 
 	// Save the model and end training first, so a failure while writing reports can't lose it.
 	DestroyLearningActor();

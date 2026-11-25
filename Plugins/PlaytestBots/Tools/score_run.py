@@ -237,7 +237,8 @@ def main():
     results = []
     for run_dir in run_dirs:
         map_name = map_name_from_run(run_dir)
-        truth, truth_path = load_truth(map_name, args.ground_truth)
+        run_truth = os.path.join(run_dir, "ground_truth.json")  # written by procedural gyms
+        truth, truth_path = load_truth(map_name, args.ground_truth or (run_truth if os.path.isfile(run_truth) else None))
         if truth is None:
             if not args.all:
                 sys.exit("No ground truth for map '%s' (looked for %s)" % (map_name, truth_path))

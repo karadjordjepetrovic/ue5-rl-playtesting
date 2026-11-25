@@ -35,6 +35,9 @@ public:
 	/** Call after something else teleports a bot (e.g. the training environment), so detectors don't compare
 	 *  positions across the jump (that would look like a fall or a clip through walls). */
 	void NotifyBotTeleported(const APawn* Bot);
+
+	/** Re-collects no-collision meshes and forbidden volumes (call after level geometry is regenerated). */
+	void RefreshLevelMarkers() { GatherClipCandidates(); GatherForbiddenZones(); }
 	static FString IssueTypeToString(EPTIssueType Type);
 
 	// Settings (starting values, tune later)
