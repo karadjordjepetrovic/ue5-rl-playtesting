@@ -62,6 +62,9 @@ struct PLAYTESTBOTS_API FPTRunConfig
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Playtest")
 	float InferenceNoise = 1.f;
 
+	/** Procedural gyms: rebuild each gym's layout every this many minutes (staggered across gyms). 0 = never. */
+	float GymRegenMinutes = 0.f;
+
 	/** Training: use the CPU instead of the GPU (slower; for machines without CUDA). */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Playtest")
 	bool bTrainOnCpu = false;
@@ -74,6 +77,8 @@ struct PLAYTESTBOTS_API FPTRunConfig
 };
 
 DECLARE_MULTICAST_DELEGATE_OneParam(FPTOnRunEvent, const FPTRunConfig& /*Config*/);
+
+class APTGymLayout;
 
 UCLASS()
 class PLAYTESTBOTS_API UPTPlaytestSubsystem : public UWorldSubsystem
@@ -105,6 +110,15 @@ public:
 	FRandomStream& GetRandom() { return Random; }
 	const TArray<TWeakObjectPtr<APawn>>& GetBots() const { return Bots; }
 
+	/** The procedural gym a bot was spawned in (null on hand-made maps). */
+	APTGymLayout* GetGymForBot(const APawn* Bot) const;
+
+	/** Called by a gym after it built a new layout: moves its bots onto the new floor. */
+	void HandleGymRegenerated(APTGymLayout* Gym);
+
+	/** Puts a bot at a random standing spot in its gym and tells the detectors about the teleport. */
+	void PlaceBotInGym(APawn* Bot, APTGymLayout* Gym);
+
 	static FString WalkerToString(EPTWalkerType Walker);
 	static bool ParseWalker(const FString& Text, EPTWalkerType& OutWalker);
 
@@ -134,6 +148,13 @@ private:
 	FTimerHandle EndTimerHandle;
 
 	TArray<TWeakObjectPtr<APawn>> Bots;
+
+	// Procedural gyms in the map (empty on hand-made maps); bots are spread over them round-robin.
+	TArray<TWeakObjectPtr<APTGymLayout>> Gyms;
+	TMap<TWeakObjectPtr<APawn>, TWeakObjectPtr<APTGymLayout>> BotGyms;
+	FTimerHandle GymRegenTimerHandle;
+	int32 NextGymToRegen = 0;
+	void RegenerateNextGym();
 
 	/** Learning Agents owner, only for the Policy walker. */
 	UPROPERTY()

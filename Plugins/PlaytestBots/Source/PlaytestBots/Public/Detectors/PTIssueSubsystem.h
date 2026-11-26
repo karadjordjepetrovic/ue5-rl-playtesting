@@ -60,6 +60,7 @@ public:
 	// Perf detector (rendered runs only)
 	float PerfWindowSeconds = 0.5f;       // frame times are averaged over this window
 	float PerfWarmupSeconds = 5.f;        // ignore shader-compile hitches at run start
+	float ClipMinSolidThickness = 40.f;   // cm of solid geometry the path must cross to count as tunnelling
 	float PerfSpikeFactor = 1.5f;         // window average vs. running baseline
 	float PerfMinSpikeMs = 4.f;           // and at least this many ms above baseline
 	float PerfCooldownSeconds = 5.f;

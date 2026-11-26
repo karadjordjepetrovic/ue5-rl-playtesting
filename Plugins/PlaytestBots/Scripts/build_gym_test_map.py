@@ -1,7 +1,8 @@
 """
 build_gym_test_map.py
-Builds /Game/PlaytestBots/Maps/PT_GymTest: an empty map with one APTGymLayout (procedural training gym),
-lighting, a PlayerStart in the gym's spawn area and a NavMeshBoundsVolume. The layout itself is generated at
+Builds /Game/PlaytestBots/Maps/PT_GymTest: an empty map with GYMS_PER_SIDE x GYMS_PER_SIDE APTGymLayouts
+(procedural training gyms, each with its own seed), lighting, a PlayerStart in the first gym's spawn area and
+one NavMeshBoundsVolume covering all gyms. Bots are spread over the gyms round-robin. The layout itself is generated at
 runtime (BeginPlay), so the map looks empty in the editor; press Play to see it.
 
 Needs: the plugin built with PTGymLayout, and Project Settings -> Navigation Mesh -> Runtime Generation = Dynamic.
@@ -17,6 +18,8 @@ MAP_PATH = MAP_DIR + "/PT_GymTest"
 TAG = "PTGenerated"
 GRID_SIZE = 8      # tiles per side (must match the gym's GridSize)
 TILE = 400         # cm
+GYMS_PER_SIDE = 2  # 2 x 2 = 4 gyms
+GAP = 1000         # cm of empty space between gyms
 
 actors = unreal.get_editor_subsystem(unreal.EditorActorSubsystem)
 level_editor = unreal.get_editor_subsystem(unreal.LevelEditorSubsystem)
@@ -56,20 +59,26 @@ sky.light_component.set_editor_property("real_time_capture", True)
 finish(sky, "SkyLight", "PT/Lighting")
 finish(spawn(unreal.SkyAtmosphere), "SkyAtmosphere", "PT/Lighting")
 
-# The gym (layout is built at runtime around its location; floor top at Z = 0)
-gym = spawn(unreal.PTGymLayout, (0, 0, 0))
-finish(gym, "PTGym", "PT")
+# The gyms (each layout is built at runtime around its location; floor top at Z = 0)
+pitch = GRID_SIZE * TILE + GAP
+offset = (GYMS_PER_SIDE - 1) * pitch / 2
+centres = []
+for i in range(GYMS_PER_SIDE):
+    for j in range(GYMS_PER_SIDE):
+        centre = (i * pitch - offset, j * pitch - offset, 0)
+        centres.append(centre)
+        finish(spawn(unreal.PTGymLayout, centre), "PTGym_%d" % len(centres), "PT/Gyms")
 
-# Spawn area: the centre tiles always stay open floor.
-finish(spawn(unreal.PlayerStart, (0, 0, 100)), "PlayerStart", "PT")
+# PlayerStart (for you in PIE) in the first gym's spawn area: the centre tiles always stay open floor.
+finish(spawn(unreal.PlayerStart, (centres[0][0], centres[0][1], 100)), "PlayerStart", "PT")
 
-# Navmesh bounds: the gym plus a margin, from below the shafts to above the walls.
-half = GRID_SIZE * TILE / 2 + 300
+# Navmesh bounds: all gyms plus a margin, from below the shafts to above the walls.
+half = offset + GRID_SIZE * TILE / 2 + 300
 nav = spawn(unreal.NavMeshBoundsVolume, (0, 0, 100))
 nav.set_actor_scale3d(unreal.Vector(half / 100.0, half / 100.0, 5.0))  # default brush is 200 cm
 finish(nav, "NavMeshBounds", "PT")
 
 level_editor.save_current_level()
-unreal.log("PT_GymTest built: gym %d x %d tiles of %d cm." % (GRID_SIZE, GRID_SIZE, TILE))
+unreal.log("PT_GymTest built: %d gyms of %d x %d tiles of %d cm." % (len(centres), GRID_SIZE, GRID_SIZE, TILE))
 unreal.log_warning("NEXT: Build -> Build Paths once (creates the RecastNavMesh actor), save the map, then press Play. "
                    "With Runtime Generation = Dynamic the navmesh is rebuilt around the generated layout.")

@@ -2,6 +2,7 @@
 // Location: Plugins/PlaytestBots/Source/PlaytestBots/Private/Coverage/PTCoverageSubsystem.cpp
 
 #include "Coverage/PTCoverageSubsystem.h"
+#include "Gym/PTGymLayout.h"
 
 #include "Dom/JsonObject.h"
 #include "Dom/JsonValue.h"
@@ -65,6 +66,15 @@ void UPTCoverageSubsystem::Tick(float DeltaTime)
 {
 	Super::Tick(DeltaTime);
 
+	if (bReachableRebuildPending)
+	{
+		ReachableRebuildDelay -= DeltaTime;
+		if (ReachableRebuildDelay <= 0.f && !IsNavBuilding())
+		{
+			RebuildReachableCells();
+		}
+	}
+
 	if (bActive)
 	{
 		SampleAccumulator += DeltaTime;
@@ -123,7 +133,17 @@ float UPTCoverageSubsystem::GetCoveragePercent() const
 void UPTCoverageSubsystem::HandleRunStarted(const FPTRunConfig& Config)
 {
 	ResetCoverage();
-	SampleReachableCells();
+	if (IsNavBuilding())
+	{
+		// Procedural gyms: the dynamic navmesh may still be building around a fresh layout.
+		bReachableRebuildPending = true;
+		ReachableRebuildDelay = 0.f;
+		UE_LOG(LogPlaytestCoverage, Display, TEXT("Navmesh still building; reachable area will be sampled when it is done."));
+	}
+	else
+	{
+		SampleReachableCells();
+	}
 	bActive = true;
 
 	SampleBots();
@@ -174,31 +194,44 @@ void UPTCoverageSubsystem::SampleReachableCells()
 		return;
 	}
 
-	// Start from the first PlayerStart, projected onto the navmesh.
-	FVector Origin = FVector::ZeroVector;
-	for (TActorIterator<APlayerStart> It(World); It; ++It)
+	// Origins: the centre of every procedural gym, or the first PlayerStart on hand-made maps.
+	TArray<TPair<FVector, float>> Origins; // location, radius
+	for (TActorIterator<APTGymLayout> It(World); It; ++It)
 	{
-		Origin = It->GetActorLocation();
-		break;
+		FVector Min, Max;
+		It->GetGymExtents(Min, Max);
+		Origins.Add({ It->ProjectPointToGym(It->GetActorLocation() + FVector(0.f, 0.f, 100.f)), FVector::Dist2D(Min, Max) * 0.5f + 200.f });
+	}
+	if (Origins.IsEmpty())
+	{
+		FVector Start = FVector::ZeroVector;
+		for (TActorIterator<APlayerStart> It(World); It; ++It)
+		{
+			Start = It->GetActorLocation();
+			break;
+		}
+		Origins.Add({ Start, ReachableRadius });
 	}
 
-	FNavLocation Projected;
-	if (!NavSys->ProjectPointToNavigation(Origin, Projected, FVector(500.f, 500.f, 1000.f)))
-	{
-		UE_LOG(LogPlaytestCoverage, Warning, TEXT("PlayerStart is not near the navmesh: coverage %% will be unreliable."));
-		return;
-	}
-	Origin = Projected.Location;
-
-	// "Reachable" = connected to the start on the navmesh. Areas bots reach that are NOT in this set
+	// "Reachable" = connected to an origin on the navmesh. Areas bots reach that are NOT in this set
 	// are interesting: sealed rooms, places you can only get to by jumping or by a collision bug.
 	const double StartTime = FPlatformTime::Seconds();
-	for (int32 Index = 0; Index < ReachableSamples; ++Index)
+	const int32 SamplesPerOrigin = FMath::Max(ReachableSamples / Origins.Num(), 10000);
+	for (const TPair<FVector, float>& Origin : Origins)
 	{
-		FNavLocation Point;
-		if (NavSys->GetRandomReachablePointInRadius(Origin, ReachableRadius, Point))
+		FNavLocation Projected;
+		if (!NavSys->ProjectPointToNavigation(Origin.Key, Projected, FVector(500.f, 500.f, 1000.f)))
 		{
-			ReachableCells.Add(LocationToCell(Point.Location));
+			UE_LOG(LogPlaytestCoverage, Warning, TEXT("Origin %s is not near the navmesh: coverage %% will be unreliable."), *Origin.Key.ToCompactString());
+			continue;
+		}
+		for (int32 Index = 0; Index < SamplesPerOrigin; ++Index)
+		{
+			FNavLocation Point;
+			if (NavSys->GetRandomReachablePointInRadius(Projected.Location, Origin.Value, Point))
+			{
+				ReachableCells.Add(LocationToCell(Point.Location));
+			}
 		}
 	}
 
@@ -212,7 +245,45 @@ void UPTCoverageSubsystem::SampleReachableCells()
 	});
 
 	UE_LOG(LogPlaytestCoverage, Display, TEXT("Reachable area: %d cells of %.0f cm (%d samples, %.0f ms)."),
-		ReachableCells.Num(), CellSize, ReachableSamples, (FPlatformTime::Seconds() - StartTime) * 1000.0);
+		ReachableCells.Num(), CellSize, SamplesPerOrigin * Origins.Num(), (FPlatformTime::Seconds() - StartTime) * 1000.0);
+}
+
+bool UPTCoverageSubsystem::IsNavBuilding() const
+{
+	UNavigationSystemV1* NavSys = FNavigationSystem::GetCurrent<UNavigationSystemV1>(GetWorld()); // IsNavigationBuildInProgress is non-const
+	return NavSys && NavSys->IsNavigationBuildInProgress();
+}
+
+void UPTCoverageSubsystem::RebuildReachableCells()
+{
+	ReachableCells.Reset();
+	ReachableCellArray.Reset();
+	SampleReachableCells();
+	VisitedReachable = 0;
+	for (const TPair<FIntVector, int32>& Visit : Visits)
+	{
+		VisitedReachable += ReachableCells.Contains(Visit.Key) ? 1 : 0;
+	}
+	bReachableRebuildPending = false;
+}
+
+void UPTCoverageSubsystem::OnLevelChanged(const FBox& Area)
+{
+	for (auto It = Visits.CreateIterator(); It; ++It)
+	{
+		if (Area.IsInsideXY(CellToLocation(It.Key())))
+		{
+			It.RemoveCurrent();
+		}
+	}
+	// Keep the counter consistent with the remaining visits until the reachable area is re-sampled.
+	VisitedReachable = 0;
+	for (const TPair<FIntVector, int32>& Visit : Visits)
+	{
+		VisitedReachable += ReachableCells.Contains(Visit.Key) ? 1 : 0;
+	}
+	bReachableRebuildPending = true;
+	ReachableRebuildDelay = 1.f;
 }
 
 void UPTCoverageSubsystem::SampleBots()

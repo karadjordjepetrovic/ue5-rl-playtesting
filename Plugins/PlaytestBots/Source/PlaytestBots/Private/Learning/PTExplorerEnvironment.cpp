@@ -14,6 +14,7 @@
 #include "NavigationSystem.h"
 #include "PTPlaytestSubsystem.h"
 #include "Learning/PTExplorerInteractor.h"
+#include "Gym/PTGymLayout.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogPlaytestReward, Log, All);
 
@@ -264,6 +265,16 @@ void UPTExplorerEnvironment::PlaceAtRandomSpot(APawn* Bot) const
 	if (!World)
 	{
 		return;
+	}
+
+	// Procedural gyms: stay inside the bot's own gym.
+	if (UPTPlaytestSubsystem* Run = World->GetSubsystem<UPTPlaytestSubsystem>())
+	{
+		if (APTGymLayout* Gym = Run->GetGymForBot(Bot))
+		{
+			Run->PlaceBotInGym(Bot, Gym);
+			return;
+		}
 	}
 
 	FVector Location(0.f, 0.f, 200.f);

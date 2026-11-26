@@ -4,6 +4,8 @@
 #include "Walkers/PTFrontierWalkerController.h"
 
 #include "Coverage/PTCoverageSubsystem.h"
+#include "Gym/PTGymLayout.h"
+#include "PTPlaytestSubsystem.h"
 #include "Engine/World.h"
 #include "EngineUtils.h"
 #include "GameFramework/Character.h"
@@ -81,6 +83,18 @@ bool APTFrontierWalkerController::TryPickTarget()
 
 	const FVector Here = BotPawn->GetNavAgentLocation();
 
+	// Procedural gyms: only pick targets inside this bot's own gym (other gyms are separate navmesh islands).
+	FBox GymArea(ForceInit);
+	if (const UPTPlaytestSubsystem* Run = World->GetSubsystem<UPTPlaytestSubsystem>())
+	{
+		if (const APTGymLayout* Gym = Run->GetGymForBot(BotPawn))
+		{
+			FVector Min, Max;
+			Gym->GetGymExtents(Min, Max);
+			GymArea = FBox(Min, Max);
+		}
+	}
+
 	// Where the other frontier bots are already heading.
 	TArray<FVector> OtherTargets;
 	for (TActorIterator<APTFrontierWalkerController> It(World); It; ++It)
@@ -106,6 +120,10 @@ bool APTFrontierWalkerController::TryPickTarget()
 		}
 
 		const FVector CellLocation = Coverage->CellToLocation(Cell);
+		if (GymArea.IsValid && !GymArea.IsInsideXY(CellLocation))
+		{
+			continue;
+		}
 		const float DistanceCm = FVector::Dist(Here, CellLocation);
 		if (DistanceCm < MinTargetDistance)
 		{

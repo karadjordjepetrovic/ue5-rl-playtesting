@@ -11,6 +11,8 @@
 #include "GameFramework/GameModeBase.h"
 #include "GameFramework/PlayerStart.h"
 #include "HAL/IConsoleManager.h"
+#include "Detectors/PTIssueSubsystem.h"
+#include "GameFramework/CharacterMovementComponent.h"
 #include "Gym/PTGymLayout.h"
 #include "Learning/PTLearningActor.h"
 #include "HAL/PlatformMisc.h"
@@ -98,9 +100,9 @@ namespace PTConsole
 // ---------------------------------------------------------------------------
 FString FPTRunConfig::ToString() const
 {
-	return FString::Printf(TEXT("bots=%d duration=%.0fs seed=%d walker=%s train=%d model=%s pawn=%s quitOnEnd=%d"),
+	return FString::Printf(TEXT("bots=%d duration=%.0fs seed=%d walker=%s train=%d model=%s pawn=%s quitOnEnd=%d gymRegen=%.0fmin"),
 		NumBots, DurationSeconds, Seed, *UPTPlaytestSubsystem::WalkerToString(Walker), bTrain, *ModelName,
-		PawnClassPath.IsEmpty() ? TEXT("<GameMode default>") : *PawnClassPath, bQuitOnEnd);
+		PawnClassPath.IsEmpty() ? TEXT("<GameMode default>") : *PawnClassPath, bQuitOnEnd, GymRegenMinutes);
 }
 
 // ---------------------------------------------------------------------------
@@ -148,6 +150,7 @@ bool UPTPlaytestSubsystem::ParseCommandLine(FPTRunConfig& OutConfig)
 	OutConfig.bFreshModel = FParse::Param(Cmd, TEXT("PTFresh"));
 	OutConfig.bTrainOnCpu = FParse::Param(Cmd, TEXT("PTCpu"));
 	FParse::Value(Cmd, TEXT("PTNoise="), OutConfig.InferenceNoise);
+	FParse::Value(Cmd, TEXT("PTGymRegen="), OutConfig.GymRegenMinutes);
 
 	FString WalkerText;
 	if (FParse::Value(Cmd, TEXT("PTWalker="), WalkerText) && !ParseWalker(WalkerText, OutConfig.Walker))
@@ -187,7 +190,21 @@ void UPTPlaytestSubsystem::StartRun(const FPTRunConfig& InConfig)
 
 	UE_LOG(LogPlaytest, Display, TEXT("Run %s starting: %s"), *RunId, *Config.ToString());
 
+	Gyms.Reset();
+	for (TActorIterator<APTGymLayout> It(World); It; ++It)
+	{
+		Gyms.Add(*It);
+	}
+
 	SpawnBots();
+
+	if (Gyms.Num() > 0 && Config.GymRegenMinutes > 0.f)
+	{
+		// One gym at a time, so only a fraction of the bots is relocated at once.
+		const float Interval = FMath::Max(10.f, Config.GymRegenMinutes * 60.f / Gyms.Num());
+		World->GetTimerManager().SetTimer(GymRegenTimerHandle, this, &UPTPlaytestSubsystem::RegenerateNextGym, Interval, /*bLoop*/ true);
+		UE_LOG(LogPlaytest, Display, TEXT("%d gyms; regenerating one every %.0f s."), Gyms.Num(), Interval);
+	}
 
 	if (Config.Walker == EPTWalkerType::Policy)
 	{
@@ -210,6 +227,7 @@ void UPTPlaytestSubsystem::EndRun()
 	if (World)
 	{
 		World->GetTimerManager().ClearTimer(EndTimerHandle);
+		World->GetTimerManager().ClearTimer(GymRegenTimerHandle);
 	}
 
 	UE_LOG(LogPlaytest, Display, TEXT("Run %s finished after %.1fs with %d bots. Output dir: %s"),
@@ -332,7 +350,14 @@ void UPTPlaytestSubsystem::SpawnBots()
 		}
 	}
 
-	UE_LOG(LogPlaytest, Display, TEXT("Spawned %d/%d bots at %d PlayerStart(s)."), Bots.Num(), Config.NumBots, PlayerStarts.Num());
+	if (Gyms.Num() > 0)
+	{
+		UE_LOG(LogPlaytest, Display, TEXT("Spawned %d/%d bots in %d procedural gym(s)."), Bots.Num(), Config.NumBots, Gyms.Num());
+	}
+	else
+	{
+		UE_LOG(LogPlaytest, Display, TEXT("Spawned %d/%d bots at %d PlayerStart(s)."), Bots.Num(), Config.NumBots, PlayerStarts.Num());
+	}
 }
 
 APawn* UPTPlaytestSubsystem::SpawnBot(int32 Index, const TArray<AActor*>& PlayerStarts)
@@ -344,13 +369,24 @@ APawn* UPTPlaytestSubsystem::SpawnBot(int32 Index, const TArray<AActor*>& Player
 		return nullptr;
 	}
 
-	// Round-robin over PlayerStarts, small random jitter so bots don't start on the exact same spot.
+	// Procedural gyms: round-robin over gyms, random standing spot inside each.
+	// Hand-made maps: round-robin over PlayerStarts, small random jitter so bots don't start on the exact same spot.
+	APTGymLayout* Gym = Gyms.Num() > 0 ? Gyms[Index % Gyms.Num()].Get() : nullptr;
 	FVector Location(0.f, 0.f, 200.f);
-	if (PlayerStarts.Num() > 0)
+	if (Gym)
 	{
-		Location = PlayerStarts[Index % PlayerStarts.Num()]->GetActorLocation();
+		const ACharacter* DefaultCharacter = Cast<ACharacter>(PawnClass->GetDefaultObject());
+		const float HalfHeight = DefaultCharacter ? DefaultCharacter->GetCapsuleComponent()->GetScaledCapsuleHalfHeight() : 100.f;
+		Location = Gym->GenerateRandomLocationInGym() + FVector(0.f, 0.f, HalfHeight + 5.f);
 	}
-	Location += FVector(Random.FRandRange(-100.f, 100.f), Random.FRandRange(-100.f, 100.f), 0.f);
+	else
+	{
+		if (PlayerStarts.Num() > 0)
+		{
+			Location = PlayerStarts[Index % PlayerStarts.Num()]->GetActorLocation();
+		}
+		Location += FVector(Random.FRandRange(-100.f, 100.f), Random.FRandRange(-100.f, 100.f), 0.f);
+	}
 	const FRotator Rotation(0.f, Random.FRandRange(0.f, 360.f), 0.f);
 
 	FActorSpawnParameters Params;
@@ -365,6 +401,10 @@ APawn* UPTPlaytestSubsystem::SpawnBot(int32 Index, const TArray<AActor*>& Player
 	}
 
 	Bot->Tags.Add(TEXT("PlaytestBot"));
+	if (Gym)
+	{
+		BotGyms.Add(Bot, Gym);
+	}
 
 	if (ACharacter* Character = Cast<ACharacter>(Bot))
 	{
@@ -398,6 +438,69 @@ void UPTPlaytestSubsystem::DestroyBots()
 		}
 	}
 	Bots.Reset();
+	BotGyms.Reset();
+}
+
+APTGymLayout* UPTPlaytestSubsystem::GetGymForBot(const APawn* Bot) const
+{
+	const TWeakObjectPtr<APTGymLayout>* Gym = BotGyms.Find(const_cast<APawn*>(Bot));
+	return Gym ? Gym->Get() : nullptr;
+}
+
+void UPTPlaytestSubsystem::RegenerateNextGym()
+{
+	if (Gyms.IsEmpty())
+	{
+		return;
+	}
+	APTGymLayout* Gym = Gyms[NextGymToRegen++ % Gyms.Num()].Get();
+	if (Gym)
+	{
+		Gym->Reset(); // the gym builds a new layout, then calls HandleGymRegenerated
+	}
+}
+
+void UPTPlaytestSubsystem::HandleGymRegenerated(APTGymLayout* Gym)
+{
+	if (!bRunning || !Gym)
+	{
+		return;
+	}
+	int32 Moved = 0;
+	for (const TPair<TWeakObjectPtr<APawn>, TWeakObjectPtr<APTGymLayout>>& Pair : BotGyms)
+	{
+		if (Pair.Value.Get() == Gym && Pair.Key.IsValid())
+		{
+			PlaceBotInGym(Pair.Key.Get(), Gym);
+			++Moved;
+		}
+	}
+	UE_LOG(LogPlaytest, Display, TEXT("Gym %s has a new layout (seed %d); moved %d bots."), *Gym->GetName(), Gym->GetCurrentSeed(), Moved);
+}
+
+void UPTPlaytestSubsystem::PlaceBotInGym(APawn* Bot, APTGymLayout* Gym)
+{
+	if (!Bot || !Gym)
+	{
+		return;
+	}
+	const FVector Location = Gym->GenerateRandomLocationInGym() + FVector(0.f, 0.f, Bot->GetDefaultHalfHeight() + 5.f);
+	Bot->SetActorLocationAndRotation(Location, Gym->GenerateRandomRotationInGym(), /*bSweep*/ false, nullptr, ETeleportType::TeleportPhysics);
+	if (const ACharacter* BotCharacter = Cast<ACharacter>(Bot))
+	{
+		if (UCharacterMovementComponent* Movement = BotCharacter->GetCharacterMovement())
+		{
+			Movement->StopMovementImmediately();
+		}
+	}
+	if (AAIController* BotAI = Cast<AAIController>(Bot->GetController()))
+	{
+		BotAI->StopMovement();
+	}
+	if (UPTIssueSubsystem* Issues = GetWorld() ? GetWorld()->GetSubsystem<UPTIssueSubsystem>() : nullptr)
+	{
+		Issues->NotifyBotTeleported(Bot);
+	}
 }
 
 void UPTPlaytestSubsystem::SpawnLearningActor()

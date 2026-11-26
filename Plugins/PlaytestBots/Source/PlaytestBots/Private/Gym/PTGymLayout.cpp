@@ -6,6 +6,7 @@
 #include "AI/NavigationSystemBase.h"
 #include "Components/BoxComponent.h"
 #include "Components/InstancedStaticMeshComponent.h"
+#include "Coverage/PTCoverageSubsystem.h"
 #include "Detectors/PTIssueSubsystem.h"
 #include "Dom/JsonObject.h"
 #include "Engine/StaticMesh.h"
@@ -19,6 +20,7 @@
 #include "Misc/Parse.h"
 #include "Misc/Paths.h"
 #include "NavigationSystem.h"
+#include "PTPlaytestSubsystem.h"
 #include "Serialization/JsonSerializer.h"
 #include "Serialization/JsonWriter.h"
 #include "UObject/ConstructorHelpers.h"
@@ -131,6 +133,16 @@ void APTGymLayout::Generate(int32 Seed)
 		if (UPTIssueSubsystem* Issues = World->GetSubsystem<UPTIssueSubsystem>())
 		{
 			Issues->RefreshLevelMarkers(); // new no-collision meshes and forbidden volumes
+		}
+		if (UPTCoverageSubsystem* Coverage = World->GetSubsystem<UPTCoverageSubsystem>())
+		{
+			FVector Min, Max;
+			GetGymExtents(Min, Max);
+			Coverage->OnLevelChanged(FBox(Min, Max)); // old visits are meaningless; re-sample reachable area
+		}
+		if (UPTPlaytestSubsystem* Run = World->GetSubsystem<UPTPlaytestSubsystem>())
+		{
+			Run->HandleGymRegenerated(this); // move this gym's bots onto the new floor
 		}
 	}
 

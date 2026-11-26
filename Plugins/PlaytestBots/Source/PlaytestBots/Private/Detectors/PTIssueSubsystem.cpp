@@ -601,6 +601,15 @@ bool UPTIssueSubsystem::CheckClip(int32 BotIndex, const FPTActionSample& Prev, c
 		FHitResult Hit;
 		if (World->LineTraceSingleByObjectType(Hit, Prev.Location, Now.Location, FCollisionObjectQueryParams(ECC_WorldStatic), Params))
 		{
+			// A bot sliding around a corner or a thin pillar makes a curved path; the straight line between two
+			// 10 Hz samples then clips the corner for a few cm. Real tunnelling crosses a whole wall: measure the
+			// solid part of the segment (entry from both ends) and ignore short chords.
+			FHitResult BackHit;
+			if (World->LineTraceSingleByObjectType(BackHit, Now.Location, Prev.Location, FCollisionObjectQueryParams(ECC_WorldStatic), Params) &&
+				FVector::Dist(Hit.ImpactPoint, BackHit.ImpactPoint) < ClipMinSolidThickness)
+			{
+				return false;
+			}
 			const AActor* HitActor = Hit.GetActor();
 			ReportIssue(BotIndex, EPTIssueType::Clip, Hit.ImpactPoint,
 				FString::Printf(TEXT("Moved through blocking geometry: %s"), HitActor ? *HitActor->GetActorNameOrLabel() : TEXT("unknown")));
