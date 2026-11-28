@@ -1,0 +1,188 @@
+{
+  "map": "/Game/PlaytestBots/Maps/PT_HoldoutRooms",
+  "bugs": [
+    {
+      "id": "floor_hole",
+      "expectedIssue": "OutOfWorld",
+      "acceptedIssues": [
+        "OutOfWorld",
+        "Clip"
+      ],
+      "location": [
+        1500,
+        1300,
+        0
+      ],
+      "radius": 300,
+      "description": "Floor tile without collision."
+    },
+    {
+      "id": "sealed_room_clip",
+      "expectedIssue": "Clip",
+      "acceptedIssues": [
+        "Clip"
+      ],
+      "location": [
+        2500.0,
+        1000,
+        100
+      ],
+      "radius": 300,
+      "description": "Doorway closed by a panel without collision."
+    },
+    {
+      "id": "stuck_pit",
+      "expectedIssue": "Stuck",
+      "acceptedIssues": [
+        "Stuck"
+      ],
+      "location": [
+        2100,
+        100,
+        -200
+      ],
+      "radius": 250,
+      "description": "Narrow 2 m deep pit in a room corner."
+    },
+    {
+      "id": "forbidden_crate",
+      "expectedIssue": "ForbiddenArea",
+      "acceptedIssues": [
+        "ForbiddenArea"
+      ],
+      "location": [
+        1300,
+        700,
+        70
+      ],
+      "radius": 250,
+      "description": "Crate stack designers did not mean to be climbable."
+    },
+    {
+      "id": "deck_edge_gap",
+      "expectedIssue": "OutOfWorld",
+      "acceptedIssues": [
+        "OutOfWorld"
+      ],
+      "location": [
+        1400,
+        0,
+        420
+      ],
+      "radius": 400,
+      "description": "Missing parapet section on the roof deck's outer edge."
+    }
+  ],
+  "controls": [
+    {
+      "id": "door_c1_r0",
+      "location": [
+        1000,
+        500.0,
+        0
+      ],
+      "radius": 200,
+      "description": "Doorway."
+    },
+    {
+      "id": "door_c1_r1",
+      "location": [
+        1000,
+        1500.0,
+        0
+      ],
+      "radius": 200,
+      "description": "Doorway."
+    },
+    {
+      "id": "door_c2_r0",
+      "location": [
+        2000,
+        500.0,
+        0
+      ],
+      "radius": 200,
+      "description": "Doorway."
+    },
+    {
+      "id": "door_row_c0",
+      "location": [
+        500.0,
+        1000,
+        0
+      ],
+      "radius": 200,
+      "description": "Doorway."
+    },
+    {
+      "id": "crouch_vent",
+      "location": [
+        1750,
+        1000,
+        0
+      ],
+      "radius": 200,
+      "description": "Crouch-only vent (1 m high)."
+    },
+    {
+      "id": "door_row_c1",
+      "location": [
+        1300,
+        1000,
+        0
+      ],
+      "radius": 200,
+      "description": "Doorway."
+    },
+    {
+      "id": "pillar_0",
+      "location": [
+        1300,
+        1300,
+        0
+      ],
+      "radius": 200,
+      "description": "Pillar."
+    },
+    {
+      "id": "pillar_1",
+      "location": [
+        1700,
+        1700,
+        0
+      ],
+      "radius": 200,
+      "description": "Pillar."
+    },
+    {
+      "id": "crate_0",
+      "location": [
+        800,
+        1700,
+        0
+      ],
+      "radius": 200,
+      "description": "Jumpable crate (allowed)."
+    },
+    {
+      "id": "crate_1",
+      "location": [
+        700,
+        1300,
+        0
+      ],
+      "radius": 200,
+      "description": "Jumpable crate (allowed)."
+    },
+    {
+      "id": "stairs",
+      "location": [
+        200,
+        1417.5,
+        0
+      ],
+      "radius": 450,
+      "description": "Stairs up to the roof deck."
+    }
+  ]
+}

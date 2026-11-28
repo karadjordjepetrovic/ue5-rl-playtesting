@@ -55,9 +55,20 @@ void UPTExplorerEnvironment::ProcessNewIssues(UWorld* World)
 			FMath::FloorToInt(Issue.Location.X / IssueClusterSize), FMath::FloorToInt(Issue.Location.Y / IssueClusterSize));
 		int32& TimesRewarded = Episode.RewardedSpots.FindOrAdd(Spot);
 		float Bonus = 0.f;
-		if (Issue.Type == EPTIssueType::OutOfWorld)
+		const APTGymLayout* Gym = Run->GetGymForBot(Bots[Issue.BotIndex].Get());
+		if (Issue.Type == EPTIssueType::OutOfWorld && Gym)
 		{
-			// Falls: the bonus once per cooldown window per bot; repeats inside the window cost reward.
+			// Procedural gyms: each fall spot pays once per bot per LAYOUT. Every regenerated layout is worth
+			// exploring for falls again, but jumping into the same hole twice pays nothing.
+			// (A once-per-3-minutes rule made the bots too cautious around edges: Random found twice as many falls.)
+			const FString Key = FString::Printf(TEXT("%d_%s_%d_%s"), *AgentId, *Gym->GetName(), Gym->GetCurrentSeed(), *Spot);
+			bool bAlreadyRewarded = false;
+			RewardedFallSpots.Add(Key, &bAlreadyRewarded);
+			Bonus = bAlreadyRewarded ? -RepeatFallPenalty : OutOfWorldReward;
+		}
+		else if (Issue.Type == EPTIssueType::OutOfWorld)
+		{
+			// Hand-made maps: the bonus once per cooldown window per bot; repeats inside the window cost reward.
 			const double Now = World->GetTimeSeconds();
 			const double* LastTime = LastFallRewardTime.Find(*AgentId);
 			if (!LastTime || Now - *LastTime >= OutOfWorldCooldown)

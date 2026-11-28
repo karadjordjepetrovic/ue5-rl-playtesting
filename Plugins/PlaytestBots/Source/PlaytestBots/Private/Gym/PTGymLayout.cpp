@@ -421,77 +421,92 @@ void APTGymLayout::PlaceBugs(FRandomStream& Rng)
 		return T.Type == ETile::Floor && T.bReachable && !T.bReserved && T.Bug == EBug::None && !IsCenterTile(P);
 	};
 
+	// Pick a bug type first, then look for a spot for it: picking a random tile first over-represents the types
+	// that fit almost anywhere (forbidden ledges made up half of all bugs).
+	auto TryPlace = [&](EBug Bug, FRandomStream& R) -> bool
+	{
+			const FIntPoint P(R.RandRange(0, GridSize - 1), R.RandRange(0, GridSize - 1));
+			FTile& T = At(P);
+			const FVector C = TileCenterLocal(P);
+			const FString Suffix = FString::Printf(TEXT("%d_%d"), P.X, P.Y);
+
+
+			switch (Bug)
+			{
+			case EBug::FloorHole:
+				if (!IsOpenFloor(P) || !IsIsolated(P)) return false;
+				T.Bug = Bug;
+				AddMarker(TEXT("floor_hole_") + Suffix, { TEXT("OutOfWorld"), TEXT("Clip") }, C, 350.f,
+					TEXT("Floor tile is visible but has no collision; bots fall through."));
+				return true;
+
+			case EBug::Shaft:
+				if (!IsOpenFloor(P) || !IsIsolated(P)) return false;
+				T.Bug = Bug;
+				AddMarker(TEXT("stuck_shaft_") + Suffix, { TEXT("Stuck") }, C - FVector(0.f, 0.f, PTGym::ShaftDepth), 250.f,
+					TEXT("Narrow 2 m deep shaft; a bot that falls in cannot get out."));
+				return true;
+
+			case EBug::ForbiddenLedge:
+				if (!IsOpenFloor(P) || !IsIsolated(P)) return false;
+				T.Type = ETile::Ledge;
+				T.Height = R.FRandRange(LedgeHeightRange.X, LedgeHeightRange.Y);
+				T.Bug = Bug;
+				AddMarker(TEXT("forbidden_ledge_") + Suffix, { TEXT("ForbiddenArea") }, C + FVector(0.f, 0.f, T.Height), 250.f,
+					TEXT("Ledge designers did not intend to be reachable; reachable only with a jump."));
+				return true;
+
+			case EBug::ClipWall:
+			{
+				if (T.Type != ETile::Wall || T.Bug != EBug::None || !IsIsolated(P)) return false;
+				bool bNextToOpen = false;
+				for (const FIntPoint& Dir : PTGym::Directions)
+				{
+					bNextToOpen |= InBounds(P + Dir) && At(P + Dir).bReachable && At(P + Dir).Type != ETile::Wall;
+				}
+				if (!bNextToOpen) return false;
+				T.Bug = Bug;
+				AddMarker(TEXT("clip_wall_") + Suffix, { TEXT("Clip") }, C + FVector(0.f, 0.f, WallHeight * 0.5f), 350.f,
+					TEXT("Wall block with no collision; bots walk through it."));
+				return true;
+			}
+
+			case EBug::MissingPerimeter:
+			{
+				if (!IsOpenFloor(P) || !IsIsolated(P)) return false;
+				TArray<int32> Sides;
+				if (P.X == 0) Sides.Add(0);
+				if (P.X == GridSize - 1) Sides.Add(1);
+				if (P.Y == 0) Sides.Add(2);
+				if (P.Y == GridSize - 1) Sides.Add(3);
+				if (Sides.IsEmpty()) return false;
+				const int32 Side = Sides[R.RandHelper(Sides.Num())];
+				T.Bug = Bug;
+				MissingPerimeter.Add(FIntVector(P.X, P.Y, Side));
+				const FVector Outward = Side == 0 ? FVector(-1, 0, 0) : Side == 1 ? FVector(1, 0, 0) : Side == 2 ? FVector(0, -1, 0) : FVector(0, 1, 0);
+				AddMarker(TEXT("edge_gap_") + Suffix, { TEXT("OutOfWorld") }, C + Outward * (TileSize * 0.5f), 500.f,
+					TEXT("Missing perimeter wall section; bots walk off the edge."));
+				return true;
+			}
+
+			default:
+				return false;
+			}
+
+	};
+
 	const int32 BugCount = Rng.RandRange(BugCountRange.X, BugCountRange.Y);
-	for (int32 Placed = 0, Tries = 0; Placed < BugCount && Tries < 200; ++Tries)
+	for (int32 Placed = 0, TypeTries = 0; Placed < BugCount && TypeTries < 30; ++TypeTries)
 	{
 		const EBug Bug = static_cast<EBug>(Rng.RandRange(1, 5));
-		const FIntPoint P(Rng.RandRange(0, GridSize - 1), Rng.RandRange(0, GridSize - 1));
-		FTile& T = At(P);
-		const FVector C = TileCenterLocal(P);
-		const FString Suffix = FString::Printf(TEXT("%d_%d"), P.X, P.Y);
-
-		switch (Bug)
+		for (int32 Try = 0; Try < 60; ++Try)
 		{
-		case EBug::FloorHole:
-			if (!IsOpenFloor(P) || !IsIsolated(P)) continue;
-			T.Bug = Bug;
-			AddMarker(TEXT("floor_hole_") + Suffix, { TEXT("OutOfWorld"), TEXT("Clip") }, C, 350.f,
-				TEXT("Floor tile is visible but has no collision; bots fall through."));
-			break;
-
-		case EBug::Shaft:
-			if (!IsOpenFloor(P) || !IsIsolated(P)) continue;
-			T.Bug = Bug;
-			AddMarker(TEXT("stuck_shaft_") + Suffix, { TEXT("Stuck") }, C - FVector(0.f, 0.f, PTGym::ShaftDepth), 250.f,
-				TEXT("Narrow 2 m deep shaft; a bot that falls in cannot get out."));
-			break;
-
-		case EBug::ForbiddenLedge:
-			if (!IsOpenFloor(P) || !IsIsolated(P)) continue;
-			T.Type = ETile::Ledge;
-			T.Height = Rng.FRandRange(LedgeHeightRange.X, LedgeHeightRange.Y);
-			T.Bug = Bug;
-			AddMarker(TEXT("forbidden_ledge_") + Suffix, { TEXT("ForbiddenArea") }, C + FVector(0.f, 0.f, T.Height), 250.f,
-				TEXT("Ledge designers did not intend to be reachable; reachable only with a jump."));
-			break;
-
-		case EBug::ClipWall:
-		{
-			if (T.Type != ETile::Wall || T.Bug != EBug::None || !IsIsolated(P)) continue;
-			bool bNextToOpen = false;
-			for (const FIntPoint& Dir : PTGym::Directions)
+			if (TryPlace(Bug, Rng))
 			{
-				bNextToOpen |= InBounds(P + Dir) && At(P + Dir).bReachable && At(P + Dir).Type != ETile::Wall;
+				++Placed;
+				break;
 			}
-			if (!bNextToOpen) continue;
-			T.Bug = Bug;
-			AddMarker(TEXT("clip_wall_") + Suffix, { TEXT("Clip") }, C + FVector(0.f, 0.f, WallHeight * 0.5f), 350.f,
-				TEXT("Wall block with no collision; bots walk through it."));
-			break;
 		}
-
-		case EBug::MissingPerimeter:
-		{
-			if (!IsOpenFloor(P) || !IsIsolated(P)) continue;
-			TArray<int32> Sides;
-			if (P.X == 0) Sides.Add(0);
-			if (P.X == GridSize - 1) Sides.Add(1);
-			if (P.Y == 0) Sides.Add(2);
-			if (P.Y == GridSize - 1) Sides.Add(3);
-			if (Sides.IsEmpty()) continue;
-			const int32 Side = Sides[Rng.RandHelper(Sides.Num())];
-			T.Bug = Bug;
-			MissingPerimeter.Add(FIntVector(P.X, P.Y, Side));
-			const FVector Outward = Side == 0 ? FVector(-1, 0, 0) : Side == 1 ? FVector(1, 0, 0) : Side == 2 ? FVector(0, -1, 0) : FVector(0, 1, 0);
-			AddMarker(TEXT("edge_gap_") + Suffix, { TEXT("OutOfWorld") }, C + Outward * (TileSize * 0.5f), 500.f,
-				TEXT("Missing perimeter wall section; bots walk off the edge."));
-			break;
-		}
-
-		default:
-			continue;
-		}
-		++Placed;
 	}
 
 	// Control areas: normal traversal where detectors must stay silent.

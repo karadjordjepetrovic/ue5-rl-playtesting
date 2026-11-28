@@ -31,8 +31,10 @@ public:
 	UPROPERTY(EditAnywhere, Category = "Gym|Layout")
 	float TileSize = 400.f;
 
+	/** Walls and pillars. High enough that a jump from a platform can't reach the top (bots got onto 3 m walls
+	 *  from 1.6 m platforms and fell out of the gym). */
 	UPROPERTY(EditAnywhere, Category = "Gym|Layout")
-	float WallHeight = 300.f;
+	float WallHeight = 500.f;
 
 	/** Raised 2 x 2 platforms, reached by one ramp or staircase each. */
 	UPROPERTY(EditAnywhere, Category = "Gym|Layout")

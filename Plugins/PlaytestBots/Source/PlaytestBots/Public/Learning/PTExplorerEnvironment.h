@@ -64,7 +64,8 @@ private:
 	void PlaceAtRandomSpot(APawn* Bot) const;
 
 	TMap<int32, FEpisodeState> Episodes;
-	TMap<int32, double> LastFallRewardTime; // per agent, across episodes
+	TMap<int32, double> LastFallRewardTime; // per agent, across episodes (hand-made maps)
+	TSet<FString> RewardedFallSpots;        // agent + gym + layout seed + spot (procedural gyms)
 	TMap<FIntVector, double> LastCellVisitTime; // any bot, any episode: stops laps along routes others just ran
 	TMap<TWeakObjectPtr<APawn>, int32> PawnToAgent;
 	int32 ProcessedIssueCount = 0;
